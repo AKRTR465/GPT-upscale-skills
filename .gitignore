@@ -1,0 +1,10 @@
+node_modules/
+work/
+jobs/
+deliveries/
+coverage/
+*.log
+.DS_Store
+Thumbs.db
+.env
+.env.*

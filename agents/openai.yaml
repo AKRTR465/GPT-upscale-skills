@@ -1,0 +1,4 @@
+interface:
+  display_name: "Tiled Image Refinement"
+  short_description: "Refine images with aligned AI tiles and layered SVG"
+  default_prompt: "Use $tiled-image-refinement to refine this image to 8K with overlapping redraws and a layered SVG."
