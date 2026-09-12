@@ -10,21 +10,21 @@
 
 以下示例来自原工作流已完成的实际任务。它们展示工作流的效果，**不是本仓库新脚本重新生成的结果，也不是原生 8K 生成能力的证明**。
 
-### 绯红魔女：完整前后图
+### sample1：局部细节
+
+![sample1局部细节前后对比](examples/sample1/comparison.png)
+
+### sample2：人物细修
+
+![sample2人物细修前后对比](examples/sample2/comparison.png)
+
+### sample3：完整前后图
 
 | 原图 · 1445×720 | 重绘后 · 7680×3827 |
 |---|---|
-| [![完整原图](examples/before-preview.jpg)](examples/before.png) | [![完整重绘图](examples/after-preview.jpg)](examples/after.png) |
+| [![完整原图](examples/sample3/before-preview.jpg)](examples/sample3/before.png) | [![完整重绘图](examples/sample3/after-preview.jpg)](examples/sample3/after.png) |
 
-点击预览查看完整 PNG：[before.png](examples/before.png) · [after.png](examples/after.png)。`after.png` 保留所选 8K 文件的全部像素，约 57.5 MiB。该例为 11 块生成重绘、1 块保守修复，加独立脸部细修。
-
-### 星海流光：局部细节
-
-![星海流光局部细节前后对比](examples/starry-detail-comparison.png)
-
-### 林间群像：人物细修
-
-![林间群像人物细修前后对比](examples/forest-portrait1-comparison.png)
+点击预览查看完整 PNG：[sample3/before.png](examples/sample3/before.png) · [sample3/after.png](examples/sample3/after.png)。`sample3/after.png` 保留所选 8K 文件的全部像素，约 57.5 MiB。该例为 11 块生成重绘、1 块保守修复，加独立脸部细修。
 
 对比的具体阶段、像素尺寸与文件哈希见 [示例说明](examples/README.md)。原画权利归原权利人，示例图片不属于代码的 MIT 许可范围。
 

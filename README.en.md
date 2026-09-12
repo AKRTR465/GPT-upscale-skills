@@ -12,13 +12,13 @@ These are unchanged comparison files selected from completed tasks in the origin
 
 | Before · 1445×720 | After · 7680×3827 |
 |---|---|
-| [![Full source image](examples/before-preview.jpg)](examples/before.png) | [![Full reconstruction](examples/after-preview.jpg)](examples/after.png) |
+| [![Full source image](examples/sample3/before-preview.jpg)](examples/sample3/before.png) | [![Full reconstruction](examples/sample3/after-preview.jpg)](examples/sample3/after.png) |
 
-Full PNGs: [before.png](examples/before.png) · [after.png](examples/after.png). The after image is the exact selected 8K PNG, about 57.5 MiB. This example used 11 generative tile redraws, one conservative source-based repair, and an independent face edit.
+Full PNGs: [sample3/before.png](examples/sample3/before.png) · [sample3/after.png](examples/sample3/after.png). The after image is the exact selected 8K PNG, about 57.5 MiB. This example used 11 generative tile redraws, one conservative source-based repair, and an independent face edit.
 
-![Starry illustration detail comparison](examples/starry-detail-comparison.png)
+![sample1 detail comparison](examples/sample1/comparison.png)
 
-![Forest illustration portrait comparison](examples/forest-portrait1-comparison.png)
+![sample2 portrait comparison](examples/sample2/comparison.png)
 
 See [example provenance](examples/README.md) for comparison stages, dimensions, hashes and image rights. The MIT license covers code and documentation, not the underlying artwork or its derivative example images.
 

@@ -8,10 +8,10 @@ These files were selected by the repository maintainer from completed work using
 
 | Before | After |
 |---|---|
-| [![原图完整预览](before-preview.jpg)](before.png) | [![重绘后完整预览](after-preview.jpg)](after.png) |
+| [![原图完整预览](sample3/before-preview.jpg)](sample3/before.png) | [![重绘后完整预览](sample3/after-preview.jpg)](sample3/after.png) |
 
-- **[before.png](before.png)** — 1445×720. Corresponding source `95016f8defd621f7c4fcf876b9d0f7438de939c1.jpg`, converted to PNG with EXIF direction normalization and sRGB interpretation. Native dimensions and full composition are retained; it is not artificially enlarged.
-- **[after.png](after.png)** — 7680×3827. Exact copy of the user-selected `绯红魔女-8k.png` (about 57.5 MiB). Full resolution and composition are retained. This is the version preserving the source's lower-left signature, not the subsequent removal version.
+- **[sample3/before.png](sample3/before.png)** — 1445×720. Corresponding original sample3 JPEG, converted to PNG with EXIF direction normalization and sRGB interpretation. Native dimensions and full composition are retained; it is not artificially enlarged.
+- **[sample3/after.png](sample3/after.png)** — 7680×3827. Exact copy of the user-selected sample3 PNG (about 57.5 MiB). Full resolution and composition are retained. This is the version preserving the source's lower-left signature, not the subsequent removal version.
 - The JPEG previews show the complete composition at comparable displayed size. Click to open the full PNG files.
 - Original processing record: 4×3 tiles with 448-pixel overlap; 11 generative tile redraws, one conservative source-based repair, and one independent face edit. The retained tile was not generated after the editor rejected it. This example must not be described as 12 successful generative tile edits.
 
@@ -19,8 +19,8 @@ These files were selected by the repository maintainer from completed work using
 
 | File | Dimensions | Meaning |
 |---|---|---|
-| [starry-detail-comparison.png](starry-detail-comparison.png) | 2312×1044 | Four pairs of detail crops: each pair compares the enlarged source on the left with the locally redrawn result on the right. |
-| [forest-portrait1-comparison.png](forest-portrait1-comparison.png) | 1416×958 | Matching portrait-group crop: source-based view left, local reconstruction right. Both were resized to the same presentation width when the comparison was originally made. |
+| [sample1/comparison.png](sample1/comparison.png) | 2312×1044 | Four pairs of detail crops: each pair compares the enlarged source on the left with the locally redrawn result on the right. |
+| [sample2/comparison.png](sample2/comparison.png) | 1416×958 | Matching portrait-group crop: source-based view left, local reconstruction right. Both were resized to the same presentation width when the comparison was originally made. |
 
 两张局部对比图按用户指定文件逐字节复制，没有重新裁剪、压缩或生成。“同尺寸对比”指对比面板使用相同显示比例，不表示输入图和输出图原生分辨率相同。面板里的“8K”指原任务交付画布，不能据此推断模型原生输出尺寸。
 
