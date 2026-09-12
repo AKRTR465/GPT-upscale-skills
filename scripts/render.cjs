@@ -5,12 +5,12 @@ const crypto=require('node:crypto');
 const sharp=require('sharp');
 const {DiskRaster,windows}=require('./raster.cjs');
 const assert=(ok,msg)=>{if(!ok)throw new Error(msg);};
-const LIMIT=256000000;
+const {validateCanvas,imageOptions,resourceEstimate,checkDisk,tiledTiffBytes}=require('./resources.cjs');
 const ID=/^[a-z][a-z0-9-]{0,63}$/;
 const header=(w,h)=>`<svg xmlns="http://www.w3.org/2000/svg" xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}">`;
 function hash(filename){const h=crypto.createHash('sha256'),fd=fs.openSync(filename,'r'),b=Buffer.allocUnsafe(1024*1024);try{let n;while((n=fs.readSync(fd,b,0,b.length,null)))h.update(b.subarray(0,n));return h.digest('hex');}finally{fs.closeSync(fd);}}
 function write(filename,value){const tmp=filename+'.'+crypto.randomUUID()+'.tmp';fs.writeFileSync(tmp,JSON.stringify(value,null,2)+'\n');fs.renameSync(tmp,filename);}
-const raw=(b,r)=>sharp(b,{raw:{width:r.width,height:r.height,channels:4},limitInputPixels:LIMIT});
+const raw=(b,r)=>sharp(b,{raw:{width:r.width,height:r.height,channels:4},...imageOptions(r.width,r.height)});
 function blend(dst,src){for(let i=0;i<src.length;i+=4){const a=src[i+3]/255;for(let c=0;c<3;c++)dst[i+c]=Math.round(src[i+c]*a+dst[i+c]*(1-a));dst[i+3]=255;}return dst;}
 function cleanup(root){const resolved=path.resolve(root);assert(path.basename(resolved).startsWith('.render-'),'Unexpected temporary path');fs.rmSync(resolved,{recursive:true,force:true});}
 
@@ -32,7 +32,7 @@ async function assemble(j,destination,h){
   const {file,record,current,geometry,seamRoute,routeAt,smooth,num,xml}=h;
   const {width:W,height:H}=j.m,out=path.resolve(destination);
   assert(!fs.existsSync(out),'Output directory already exists; choose a new version');
-  assert(Number.isSafeInteger(W)&&Number.isSafeInteger(H)&&W>0&&H>0&&W*H<=LIMIT,'Invalid canvas or canvas exceeds 256 megapixels');
+  validateCanvas(W,H);
   assert(Number.isSafeInteger(j.m.rows)&&Number.isSafeInteger(j.m.cols)&&j.m.rows>0&&j.m.cols>0&&j.m.rows*j.m.cols<=1000,'Invalid manifest grid');
   assert(Array.isArray(j.m.regions)&&j.m.regions.length<=1000,'Invalid editing region list');
   const groups=j.m.detailGroups||[];assert(Array.isArray(groups),'Invalid detail group list');
@@ -46,6 +46,7 @@ async function assemble(j,destination,h){
   for(const t of j.m.regions){geometry(j.m,t);const r=record(j,t.id);current(j,t,r);assert(r.state==='accepted',`${t.id}: visual QA not accepted`);}
   assert(hash(file(j,j.m.base))===j.m.baseSha256,'Reference base changed');
   for(const g of groups){geometry({...j.m,schemaVersion:1},g);const children=j.m.regions.filter(t=>t.groupId===g.id);assert(children.length===g.cols*g.rows,`Incomplete detail group ${g.id}`);const coords=new Set();for(const t of children){assert(Number.isSafeInteger(t.row)&&Number.isSafeInteger(t.col)&&t.row>=0&&t.row<g.rows&&t.col>=0&&t.col<g.cols&&!coords.has(`${t.row}/${t.col}`),'Invalid detail group grid');coords.add(`${t.row}/${t.col}`);assert(t.region.left>=g.region.left&&t.region.top>=g.region.top&&t.region.left+t.region.width<=g.region.left+g.region.width&&t.region.top+t.region.height<=g.region.top+g.region.height,'Detail child outside parent');}}
+  const resourcePlan=resourceEstimate(W,H,j.m.regions,groups),diskCheck=checkDisk(out,resourcePlan.estimatedAdditionalAssemblyBytes);
   fs.mkdirSync(out,{recursive:true});const tmp=fs.mkdtempSync(path.join(out,'.render-'));let canvas,svg;
   const records=[],seamPaths=[];const start=Date.now();let temporaryBytes=0;
   try{
@@ -54,7 +55,7 @@ async function assemble(j,destination,h){
     const collect=(t,rec)=>records.push({...rec,region:t.region,groupId:t.groupId||null,destinationScale:[t.region.width/rec.nativeWidth,t.region.height/rec.nativeHeight]});
     async function tile(disk,t,order,origin,emit){
       const rec=record(j,t.id),r=t.region,local={...r,left:r.left-origin.left,top:r.top-origin.top};
-      const aligned=await sharp(file(j,rec.aligned),{limitInputPixels:LIMIT}).ensureAlpha().raw().toBuffer({resolveWithObject:true});
+      const aligned=await sharp(file(j,rec.aligned),imageOptions(W,H)).ensureAlpha().raw().toBuffer({resolveWithObject:true});
       assert(aligned.info.width===r.width&&aligned.info.height===r.height,`${t.id}: aligned dimensions differ from placement`);const pixels=aligned.data,oldPixels=disk.read(local);
       const sw=Math.ceil(r.width/4),sh=Math.ceil(r.height/4),sx=r.width/sw,sy=r.height/sh;
       const old=await raw(oldPixels,r).resize(sw,sh).raw().toBuffer(),newer=await raw(pixels,r).resize(sw,sh).raw().toBuffer();
@@ -77,13 +78,13 @@ async function assemble(j,destination,h){
       try{
         if(isGroup){detailDisk=DiskRaster.create(path.join(tmp,`${item.id}.tiff`),r.width,r.height);await detailDisk.fillFrom(file(j,j.m.base),r);temporaryBytes=Math.max(temporaryBytes,fs.statSync(canvas.filename).size+fs.statSync(detailDisk.filename).size);const children=j.m.regions.filter(t=>t.groupId===item.id).sort((a,b)=>a.row-b.row||a.col-b.col);for(const child of children)await tile(detailDisk,child,children,r,false);}
         const rec=isGroup?null:record(j,item.id);if(rec)collect(item,rec);
-        const maskMeta=await sharp(file(j,item.mask),{limitInputPixels:LIMIT}).metadata();assert(maskMeta.width===r.width&&maskMeta.height===r.height,`${item.id}: mask dimensions differ`);
+        const maskMeta=await sharp(file(j,item.mask),imageOptions(W,H)).metadata();assert(maskMeta.width===r.width&&maskMeta.height===r.height,`${item.id}: mask dimensions differ`);
         // A tiled TIFF avoids repeatedly decoding a large parent PNG mask.
-        const maskFile=path.join(tmp,`${item.id}-mask.tiff`);await sharp(file(j,item.mask),{limitInputPixels:LIMIT}).removeAlpha().greyscale().tiff({compression:'none',tile:true,tileWidth:256,tileHeight:256}).toFile(maskFile);
+        const maskFile=path.join(tmp,`${item.id}-mask.tiff`);await sharp(file(j,item.mask),imageOptions(W,H)).removeAlpha().greyscale().tiff({compression:'none',tile:true,tileWidth:256,tileHeight:256}).toFile(maskFile);
         svg.start(item.id,isGroup?`${item.id} (detail group)`: `${item.id} (${rec.method})`);
         for(const q of windows(r.width,r.height)){
-          const pixels=isGroup?detailDisk.read(q):await sharp(file(j,rec.aligned),{limitInputPixels:LIMIT}).extract(q).ensureAlpha().raw().toBuffer();
-          const mask=await sharp(maskFile,{limitInputPixels:LIMIT}).extract(q).removeAlpha().greyscale().raw().toBuffer();
+          const pixels=isGroup?detailDisk.read(q):await sharp(file(j,rec.aligned),imageOptions(W,H)).extract(q).ensureAlpha().raw().toBuffer();
+          const mask=await sharp(maskFile,imageOptions(W,H)).extract(q).removeAlpha().greyscale().raw().toBuffer();
           for(let i=0;i<mask.length;i++)pixels[i*4+3]=Math.round(pixels[i*4+3]*mask[i]/255);
           const dst={...q,left:q.left+r.left,top:q.top+r.top};canvas.write(dst,blend(canvas.read(dst),pixels));await svg.image(pixels,dst,`${item.id}-image-${q.left}-${q.top}`);
         }
@@ -91,16 +92,16 @@ async function assemble(j,destination,h){
       }finally{if(detailDisk){detailDisk.close();fs.unlinkSync(detailDisk.filename);}}
     }
     svg.finish();canvas.close();
-    await sharp(canvas.filename,{limitInputPixels:LIMIT}).removeAlpha().withIccProfile('srgb').png().toFile(path.join(out,'refined.png'));
+    await sharp(canvas.filename,imageOptions(W,H)).removeAlpha().withIccProfile('srgb').png().toFile(path.join(out,'refined.png'));
     const previewScale=Math.min(1,1920/Math.max(W,H)),pw=Math.max(1,Math.round(W*previewScale)),ph=Math.max(1,Math.round(H*previewScale));
-    await sharp(canvas.filename,{limitInputPixels:LIMIT}).resize(pw,ph).jpeg({quality:94}).toFile(path.join(out,'preview.jpg'));
+    await sharp(canvas.filename,imageOptions(W,H)).resize(pw,ph).jpeg({quality:94}).toFile(path.join(out,'preview.jpg'));
     const overlay=`<svg xmlns="http://www.w3.org/2000/svg" width="${pw}" height="${ph}" viewBox="0 0 ${W} ${H}"><g fill="none" stroke="#00ffb7" stroke-width="${2*W/pw}">${seamPaths.map(p=>`<polyline points="${p.map(v=>v.join(',')).join(' ')}"/>`).join('')}</g></svg>`;
     await sharp(path.join(out,'preview.jpg')).composite([{input:Buffer.from(overlay)}]).jpeg().toFile(path.join(out,'seams.jpg'));
     const report={schemaVersion:2,sourceName:j.m.sourceName,sourceSha256:j.m.sourceSha256,width:W,height:H,preset:j.m.preset||null,
       generatedRegions:records.filter(r=>r.method==='generated').length,retainedRegions:records.filter(r=>r.method==='retained').length,
       disclosure:'Interpretive detail. Output canvas size differs from native generation resolution. SVG embeds raster layers.',
       svgSha256:hash(path.join(out,'refined.svg')),pngSha256:hash(path.join(out,'refined.png')),svgIndex:svg.index,records,
-      resources:{assemblyMilliseconds:Date.now()-start,peakResidentBytes:process.resourceUsage().maxRSS*1024,temporaryRasterBytes:temporaryBytes}};
+      resources:{...resourcePlan,diskCheck,assemblyMilliseconds:Date.now()-start,peakResidentBytes:process.resourceUsage().maxRSS*1024,temporaryRasterBytes:temporaryBytes}};
     write(path.join(out,'report.json'),report);return{output:out,dimensions:[W,H],generated:report.generatedRegions,retained:report.retainedRegions,resources:report.resources};
   }finally{if(canvas)canvas.close();if(svg)svg.close();cleanup(tmp);}
 }
@@ -135,26 +136,27 @@ async function verify(destination,opt={}){
   for(const k of Object.keys(opt))assert(['max-mean-difference','max-outlier-fraction'].includes(k),`Unknown option --${k}`);
   const out=path.resolve(destination),report=JSON.parse(fs.readFileSync(path.join(out,'report.json'),'utf8')),svg=path.join(out,'refined.svg'),png=path.join(out,'refined.png');
   assert(hash(svg)===report.svgSha256&&hash(png)===report.pngSha256,'Export hashes changed');
-  assert(Number.isInteger(report.width)&&Number.isInteger(report.height)&&report.width>0&&report.height>0&&report.width*report.height<=LIMIT,'Invalid report dimensions');
+  const {width:W,height:H}=report;validateCanvas(W,H);
   // Legacy v1 exports can be validated through the bounded path only after reassembly;
   // retain the old renderer in the CLI for already-produced legacy SVG documents.
   const scanned=await scanSvg(svg,report.width,report.height);
   assert(Array.isArray(report.svgIndex)&&JSON.stringify(scanned.index)===JSON.stringify(report.svgIndex),'SVG node index differs from actual saved document');
-  const meta=await sharp(png,{limitInputPixels:LIMIT}).metadata();assert(meta.width===report.width&&meta.height===report.height,'Full-resolution dimensions do not match');
+  const meta=await sharp(png,imageOptions(W,H)).metadata();assert(meta.width===report.width&&meta.height===report.height,'Full-resolution dimensions do not match');
+  const diskCheck=checkDisk(out,tiledTiffBytes(W,H));
   const tmp=fs.mkdtempSync(path.join(out,'.render-')),raster=path.join(tmp,'comparison.tiff');let fd;let sum=0,max=0,outliers=0,channels=0,count=0;const start=Date.now();
   try{
-    await sharp(png,{limitInputPixels:LIMIT}).removeAlpha().tiff({compression:'none',tile:true,tileWidth:256,tileHeight:256}).toFile(raster);
+    await sharp(png,imageOptions(W,H)).removeAlpha().tiff({compression:'none',tile:true,tileWidth:256,tileHeight:256}).toFile(raster);
     fd=fs.openSync(svg,'r');
     for(const r of windows(report.width,report.height)){
       const nodes=scanned.index.filter(n=>n.left<r.left+r.width&&n.left+n.width>r.left&&n.top<r.top+r.height&&n.top+n.height>r.top);
       const root=Buffer.from(`<svg xmlns="http://www.w3.org/2000/svg" width="${r.width}" height="${r.height}" viewBox="${r.left} ${r.top} ${r.width} ${r.height}">`);
       const doc=Buffer.concat([root,...nodes.map(n=>readNode(fd,n)),Buffer.from('</svg>')]);
-      const a=await sharp(raster,{limitInputPixels:LIMIT}).extract(r).removeAlpha().raw().toBuffer(),b=await sharp(doc,{limitInputPixels:1048576}).removeAlpha().raw().toBuffer();
+      const a=await sharp(raster,imageOptions(W,H)).extract(r).removeAlpha().raw().toBuffer(),b=await sharp(doc,{limitInputPixels:1048576}).removeAlpha().raw().toBuffer();
       assert(a.length===b.length&&a.length===r.width*r.height*3,'Window render dimensions differ');
       for(let i=0;i<a.length;i++){const d=Math.abs(a[i]-b[i]);sum+=d;if(d>max)max=d;if(d>10)outliers++;}channels+=a.length;count++;
     }
     const threshold=(key,fallback)=>{const n=opt[key]===undefined?fallback:Number(opt[key]);assert(Number.isFinite(n)&&n>=0,`Invalid numeric value: ${opt[key]}`);return n;};
-    const result={width:report.width,height:report.height,meanChannelDifference:sum/channels,maxChannelDifference:max,fractionAbove10:outliers/channels,
+    const result={width:report.width,height:report.height,diskCheck,meanChannelDifference:sum/channels,maxChannelDifference:max,fractionAbove10:outliers/channels,
       embeddedImages:scanned.index.length,maxDataAttributeBytes:scanned.maxDataAttributeBytes,svgSha256:report.svgSha256,pngSha256:report.pngSha256,
       pixelsCompared:channels/3,verificationWindows:count,peakResidentBytes:process.resourceUsage().maxRSS*1024,temporaryRasterBytes:fs.statSync(raster).size,verificationMilliseconds:Date.now()-start,
       visualQA:'Separate visual inspection required; this verifies render and file consistency only.'};

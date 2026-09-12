@@ -6,6 +6,7 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 const sharp = require('sharp');
 const { plan, planGrid, MAX_TILES } = require('./planner.cjs');
+const { imageOptions, inspectImage, resourceEstimate, checkDisk } = require('./resources.cjs');
 sharp.concurrency(1);
 sharp.cache({ memory: 128, files: 8, items: 24 });
 const clamp = (x, a, b) => Math.max(a, Math.min(b, x));
@@ -62,7 +63,7 @@ function signature(j, t, r) {
 }
 async function crop(j, t) {
   geometry(j.m, t);
-  await sharp(file(j, j.m.base)).extract(t.region).png().toFile(file(j, t.input));
+  await sharp(file(j, j.m.base), imageOptions(j.m.width, j.m.height)).extract(t.region).png().toFile(file(j, t.input));
   const meta = await sharp(file(j, t.input)).metadata();
   assert(meta.width === t.region.width && meta.height === t.region.height && meta.width <= 1024 && meta.height <= 1024, 'Crop dimensions violate the 1K plan');
   t.inputSha256 = hash(file(j, t.input));
@@ -71,13 +72,14 @@ async function crop(j, t) {
 async function prepare(source, dir, opt = {}) {
   const root = path.resolve(dir), src = path.resolve(source);
   assert(!fs.existsSync(root), 'Job directory already exists; use a new job');
-  const planned = await plan(src, opt);
+  assert(!Object.hasOwn(opt, 'work-dir'), '--work-dir is for plan; prepare checks the JOB destination');
+  const planned = await plan(src, opt, root);
   // Plan validates parameters and opacity before any task directory is created.
   fs.mkdirSync(root, { recursive: true });
   try {
     for (const d of ['inputs', 'generated', 'aligned', 'records', 'qa', 'masks', 'references']) fs.mkdirSync(path.join(root, d));
     const m = { ...planned, sourceName: path.basename(src), sourceSha256: hash(src), base: 'base.tiff', detailGroups: [] }, j = { root, m };
-    await sharp(src).rotate().toColourspace('srgb').removeAlpha()
+    await sharp(src, imageOptions(m.sourceWidth, m.sourceHeight)).rotate().toColourspace('srgb').removeAlpha()
       .resize(m.width, m.height, { kernel: 'lanczos3', fit: 'fill' })
       .tiff({ compression: 'none', tile: true, tileWidth: 256, tileHeight: 256 }).toFile(file(j, m.base));
     m.baseSha256 = hash(file(j, m.base));
@@ -86,7 +88,7 @@ async function prepare(source, dir, opt = {}) {
     const z = Math.max(m.width, m.height) / Math.min(1800, Math.max(m.width, m.height));
     const pw = Math.max(1, Math.round(m.width / z)), ph = Math.max(1, Math.round(m.height / z));
     const overlay = `<svg xmlns="http://www.w3.org/2000/svg" width="${pw}" height="${ph}" viewBox="0 0 ${m.width} ${m.height}">${m.regions.map(t => `<rect x="${t.core.left}" y="${t.core.top}" width="${t.core.width}" height="${t.core.height}" fill="none" stroke="#00ffb7" stroke-width="${3 * z}"/><text x="${t.core.left + 12 * z}" y="${t.core.top + 28 * z}" font-size="${22 * z}" fill="#00ffb7">${t.id}</text>`).join('')}</svg>`;
-    await sharp(file(j, m.base)).resize(pw, ph).composite([{ input: Buffer.from(overlay) }]).jpeg().toFile(file(j, 'qa/plan.jpg'));
+    await sharp(file(j, m.base), imageOptions(m.width, m.height)).resize(pw, ph).composite([{ input: Buffer.from(overlay) }]).jpeg().toFile(file(j, 'qa/plan.jpg'));
     return { job: root, dimensions: [m.width, m.height], tiles: m.regions.length, overlap: m.overlap, maxCrop: m.maxCrop, resources: m.resources };
   } catch (e) {
     // Only remove the new isolated directory created by this invocation.
@@ -100,9 +102,9 @@ async function addRegion(dir, id, opt) {
   assert(opt.mask, 'Provide a grayscale placement mask');
   const bounds = { left: int(opt.left, NaN, 0), top: int(opt.top, NaN, 0), width: int(opt.width, NaN), height: int(opt.height, NaN) };
   geometry({ ...j.m, schemaVersion: 1 }, { region: bounds });
-  const meta = await sharp(opt.mask).metadata();
+  const meta = await inspectImage(opt.mask);
   assert(meta.width === bounds.width && meta.height === bounds.height, 'Mask dimensions must equal region dimensions');
-  if (opt.context) await sharp(opt.context).metadata();
+  const contextMeta = opt.context ? await inspectImage(opt.context) : null;
   const maxEdge = j.m.maxTileEdge || 1024, oversized = bounds.width > maxEdge || bounds.height > maxEdge;
   assert(!oversized || j.m.schemaVersion === 2, 'Legacy oversized detail: create a new 1K-planned job from the source');
   let group, additions;
@@ -119,16 +121,20 @@ async function addRegion(dir, id, opt) {
   } else additions = [{ id, kind: 'detail', region: bounds, input: `inputs/${id}.png`, mask, ...(context ? { context } : {}) }];
   assert(j.m.regions.length + additions.length <= MAX_TILES, 'Job exceeds 1000 editing blocks');
   for (const t of additions) { geometry(j.m, t); assert(!j.m.regions.some(q => q.id === t.id), 'Duplicate child region ID'); }
+  const previousResources = resourceEstimate(j.m.width, j.m.height, j.m.regions, j.m.detailGroups || []);
+  const resources = resourceEstimate(j.m.width, j.m.height, [...j.m.regions, ...additions], [...(j.m.detailGroups || []), ...(group ? [group] : [])]);
+  resources.diskCheck = checkDisk(j.root, Math.max(0, resources.estimatedAdditionalPrepareBytes - previousResources.estimatedAdditionalPrepareBytes));
   const created = [file(j, mask), ...additions.map(t => file(j, t.input))];
   try {
-    await sharp(opt.mask).removeAlpha().greyscale().tiff({ compression: 'none', tile: true }).toFile(file(j, mask));
+    await sharp(opt.mask, imageOptions(meta.width, meta.height)).removeAlpha().greyscale().tiff({ compression: 'none', tile: true, tileWidth: 256, tileHeight: 256 }).toFile(file(j, mask));
     if (context) {
       fs.mkdirSync(path.dirname(file(j, context)), { recursive: true }); created.push(file(j, context));
-      await sharp(opt.context).rotate().resize({ width: 1024, height: 1024, fit: 'inside', withoutEnlargement: true }).png().toFile(file(j, context));
+      await sharp(opt.context, imageOptions(contextMeta.width, contextMeta.height)).rotate().resize({ width: 1024, height: 1024, fit: 'inside', withoutEnlargement: true }).png().toFile(file(j, context));
     }
     for (const t of additions) await crop(j, t);
     j.m.regions.push(...additions);
     if (group) (j.m.detailGroups ||= []).push(group);
+    j.m.resources = resources;
     write(path.join(j.root, 'manifest.json'), j.m);
     return { added: id, regions: additions.map(t => t.id), grouped: !!group, context: context || null };
   } catch (e) { for (const p of created) if (fs.existsSync(p)) fs.unlinkSync(p); throw e; }

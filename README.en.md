@@ -82,13 +82,13 @@ node scripts/pipeline.cjs prepare input.png jobs/example --preset 8k --max-tile-
 
 `plan` writes only JSON to stdout and creates no job or base image. `prepare` uses the same planner to create `base.tiff`, crops and a manifest. Change `--preset` for another resolution. Explicit presets, custom long edges and custom short edges are mutually exclusive.
 
-For manual commands, masks, resumability and output records, read [the CLI guide](references/cli.md). Run `npm run check` and `npm test` for synthetic functional tests that make no model calls. A separate 16K release stress suite covers landscape, 4:3, square and portrait exports, with a 4 GiB single-process peak-memory acceptance threshold.
+For manual commands, masks, resumability and output records, read [the CLI guide](references/cli.md). Run `npm run check` and `npm test` for synthetic functional tests that make no model calls. A separate release stress suite covers 16K landscape, 4:3, square and portrait exports plus a 37258×8640 custom canvas, with a 4 GiB single-process peak-memory acceptance threshold.
 
 ## Resolution and limits
 
 The hard 1K cap applies to actual edit inputs and their destination regions, not to the model's native return dimensions. Returned crops can be smaller, so interpolation remains part of placement. SVG layers are bitmaps, not infinitely scalable vector paths. Each job chooses one resolution; it does not automatically generate every preset or repeatedly redraw through increasing sizes.
 
-The limits are **256 megapixels per canvas and 1000 actual edit blocks per job**, including detail children. A 15360×15360 16K square is 235.9 MP. TIFF-backed normalization and compositing, incremental SVG writing and windowed full-pixel verification bound processing buffers. Large assembly and verification should run serially, with temporary disk space reserved from the plan's resource estimate.
+**There is no fixed megapixel ceiling; each job still has a 1000-edit limit**, including detail children. Admission checks dimension arithmetic, classic TIFF file addressing and destination disk capacity. `plan --work-dir DESTINATION` checks available space without creating files. Prepare, detail addition, assembly and verification check their own destination filesystem before writing. Estimates include exports plus a 20% and 256 MiB margin; they do not reserve space. See [resource policy](references/resources.md). TIFF-backed normalization and compositing, incremental SVG writing and windowed full-pixel verification bound processing buffers. Large assembly and verification should run serially, with temporary disk space reserved from the plan's resource estimate.
 
 Legacy job coordinates remain unchanged. Existing artifacts remain processable; new imports into oversized legacy regions are rejected, requiring a new job planned from the original source.
 
@@ -99,3 +99,5 @@ The helper supports opaque still images. Optional requested object/overlay remov
 Code and documentation: [MIT](LICENSE). Example artwork: separate rights retained by the respective rights holders, as described in [examples](examples/README.md).
 
 The v0.2.0 local Windows acceptance passed all four 16K aspect ratios, with a maximum process peak of **555.89 MiB** for the square image. Every PNG/SVG pair was compared at every pixel. The [raw acceptance report](validation/windows-16k.json) records dimensions, time, differences and disk estimates.
+
+The v0.2.1 local Windows acceptance passed an exact 37258×8640 (322 MP) canvas with 420 base tiles and full-pixel comparison. Peak RSS was **570.36 MiB**, and the complete synthetic run took about 158 seconds. No image model was called. [Raw acceptance report](validation/windows-322mp.json).
