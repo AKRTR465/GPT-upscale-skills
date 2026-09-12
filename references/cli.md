@@ -12,7 +12,7 @@ Paths below are examples relative to the current working directory. Use quoted p
 ## 1. Plan, then prepare
 
 ```sh
-node scripts/pipeline.cjs plan "input.png" --preset 8k --max-tile-edge 1024 --overlap 128
+node scripts/pipeline.cjs plan "input.png" --preset 8k --max-tile-edge 1024 --overlap 128 --work-dir "jobs/example"
 node scripts/pipeline.cjs prepare "input.png" "jobs/example" --preset 8k --max-tile-edge 1024 --overlap 128 --feather 48
 ```
 
@@ -28,10 +28,11 @@ node scripts/pipeline.cjs prepare "input.png" "jobs/example" --preset 8k --max-t
 | `--pad N` | Compatibility option for per-side padding, so total overlap is `2 × N`; mutually exclusive with `--overlap` |
 | `--cols N`, `--rows N` | Optional manual grid dimensions; the resulting grid must still satisfy cap and seam constraints |
 | `--feather N` | Initial seam transition in destination pixels; default 48 |
+| `--work-dir PATH` | Read-only `plan` only: inspect free space on the destination filesystem without creating it. `prepare` uses its positional JOB directory. |
 
 All options take a value. Multi-tile layouts need overlap of at least 4 pixels, and padding must be below half the smallest core edge on each split axis. Dimensions preserve the original aspect ratio and do not shrink an already larger source. The report shows the actual result, which can exceed the requested preset. One job produces one target resolution; there is no automatic multi-preset generation or export.
 
-For cap `L` and per-side padding `p`, each split axis uses `ceil(D / (L - 2p))` cores; an axis already no larger than `L` uses one core. Actual cropped integer rectangles are checked after expanding by `p` and clipping at the canvas edges. Invalid overlap, undersized manual grids, canvas sizes above 256 megapixels, or more than 1000 actual edit blocks fail before creating the job. Invalid manual grids include a suggested automatic layout; they are not silently changed.
+For cap `L` and per-side padding `p`, each split axis uses `ceil(D / (L - 2p))` cores; an axis already no larger than `L` uses one core. Actual cropped integer rectangles are checked after expanding by `p` and clipping at the canvas edges. Invalid overlap, undersized manual grids, dimensions or temporary files exceeding format boundaries, insufficient destination disk space, or more than 1000 actual edit blocks fail before creating the job. Invalid manual grids include a suggested automatic layout; they are not silently changed.
 
 Default examples, assuming a 16:9 source no larger than the target:
 
@@ -42,7 +43,7 @@ Default examples, assuming a 16:9 source no larger than the target:
 | `8k` | 7680×4320 | 9×5 | 45 |
 | `16k` | 15360×8640 | 18×10 | 180 |
 
-`prepare` creates `base.tiff`, `inputs/*.png`, `qa/plan.jpg`, and `manifest.json`. The source file is read only and the job path must be new. Normalization corrects EXIF direction, uses sRGB and writes directly to file. Helpers support opaque still images. Use the resource estimate to reserve temporary disk space, and run large assembly/verification operations serially.
+`prepare` creates `base.tiff`, `inputs/*.png`, `qa/plan.jpg`, and `manifest.json`. The source file is read only and the job path must be new. Normalization corrects EXIF direction, uses sRGB and writes directly to file. Helpers support opaque still images. No fixed megapixel cap is applied. `resources` includes classic TIFF byte checks, work/export estimates and a disk-check result. A plan without `--work-dir` reports `diskCheck.status: "not-requested"`; it has not checked available disk. Prepare checks the actual job filesystem before creating the job. These checks do not reserve disk space. See [resource policy](resources.md), and run large assembly/verification operations serially.
 
 ## 2. Optional detail region, before importing any results
 
@@ -52,7 +53,7 @@ node scripts/pipeline.cjs add-region "jobs/example" face --left 2700 --top 1300 
 
 Coordinates are on the target canvas. The grayscale mask must be exactly the region's width and height. White keeps the detail patch, black keeps the assembled image; soft edges should be encoded as gray. Alpha is ignored when reading a mask, so supply actual grayscale values rather than an alpha-only mask. Create the mask to match the subject; a rectangle is not a universal portrait mask.
 
-An oversized region is a logical group: it is automatically split into capped child edits such as `face-r1c1`, using the job's cap and overlap. The parent retains the full-region mask. Children are assembled within the group before that mask is applied once to the main canvas. Read the exact child IDs from the manifest or `status`; each child needs its own import, alignment and visual acceptance. A small region retains the supplied ID, such as `face`. Added children count toward the job-wide 1000-edit limit.
+An oversized region is a logical group: it is automatically split into capped child edits such as `face-r1c1`, using the job's cap and overlap. The parent retains the full-region mask. Children are assembled within the group before that mask is applied once to the main canvas. Read the exact child IDs from the manifest or `status`; each child needs its own import, alignment and visual acceptance. A small region retains the supplied ID, such as `face`. Added children count toward the job-wide 1000-edit limit. Additional disk requirements are checked before writing masks or crops; the updated resource estimate is saved in the manifest.
 
 The exported SVG keeps a completed group as one logical layer made of embedded raster pieces. Child IDs and native sizes remain in `report.json` records with their `groupId`, rather than becoming independently composited SVG layers.
 
@@ -117,7 +118,7 @@ Assembly refuses incomplete, unreviewed, or stale jobs. The output directory mus
 | `report.json` | Native sizes, destination scale, prompts, methods, QA and hashes |
 | `verification.json` | Full-pixel SVG/PNG comparison, created by `verify` |
 
-Assembly uses a file-backed RGBA canvas and TIFF-to-PNG encoding, writes the standalone SVG incrementally, and embeds the base in capped raster pieces. It does not keep the whole canvas or SVG string in a JavaScript buffer. Retain sufficient temporary disk space until the command finishes.
+Assembly uses a file-backed RGBA canvas and TIFF-to-PNG encoding, writes the standalone SVG incrementally, and embeds the base in capped raster pieces. It does not keep the whole canvas or SVG string in a JavaScript buffer. Assembly checks the output filesystem for estimated additional canvas, detail and export bytes before creating output files. Verification separately checks space for its comparison TIFF. Both add a 20% margin and 256 MiB; estimates are content-dependent and additional retries are not included.
 
 `verify` checks the saved SVG via Sharp/libvips SVG rendering. It reads actual embedded nodes and renders bounded windows at 1:1 pixel scale, covering every pixel of the exported PNG. Default acceptance is mean channel difference ≤0.5/255 and the fraction of channels differing by more than 10/255 ≤0.001. Renderer tolerances can be changed explicitly with `--max-mean-difference` and `--max-outlier-fraction`; investigate a mismatch before loosening them. A failed check exits nonzero and writes the measured report. Verification includes file hashes; an index is not a substitute for reading the delivered SVG.
 
@@ -148,12 +149,13 @@ npm test
 
 Tests use synthetic geometry, not image-generation calls. They exercise preset planning, cap/coverage checks, option conflicts, grouped masks, legacy records, complete assembly/rendering, missing work, review gates, stale records, orientation, affine recovery, seam routing and lossless embedded-image splitting. Small fixtures exercise the file-backed path and compare windowed verification with full SVG rendering. Windows and Linux CI run the functional suite.
 
-The separate release stress suite exports and verifies 16K landscape, 4:3, square and portrait fixtures, recording peak memory and temporary disk use. Its single-process peak-memory acceptance threshold is 4 GiB. Synthetic verification measures pipeline behavior, not image-generation quality; the repository's example images remain unchanged historical workflow outputs.
+The separate release stress suite exports and verifies 16K landscape, 4:3, square and portrait fixtures. The `--dimensions WIDTHxHEIGHT` mode validates an exact custom canvas and is exclusive with `--shape` and `--long-edge`, recording peak memory and temporary disk use. Its single-process peak-memory acceptance threshold is 4 GiB. Synthetic verification measures pipeline behavior, not image-generation quality; the repository's example images remain unchanged historical workflow outputs.
 
 ```sh
 npm run test:stress
+npm run test:stress -- --dimensions 37258x8640 --work-dir work/stress --report work/322mp-report.json
 ```
 
 Run the stress suite separately from routine development checks. It performs real full-resolution exports and needs the disk space and execution time associated with those canvases.
 
-Pushes to `release/*` branches also run the full stress suite on Windows and Linux. The same suite can be requested with the workflow's `stress` input; JSON acceptance reports are uploaded as CI artifacts.
+Pushes to `release/*` branches run both the four-shape 16K suite and a 37258×8640 (322 MP) export/verification on Windows and Linux. The same suite can be requested with the workflow's `stress` input; JSON acceptance reports are uploaded as CI artifacts.

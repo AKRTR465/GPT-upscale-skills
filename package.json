@@ -1,6 +1,6 @@
 {
   "name": "tiled-image-refinement",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "private": true,
   "description": "Deterministic helpers for an AI tiled image-refinement skill",
   "license": "MIT",

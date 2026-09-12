@@ -10,7 +10,7 @@ const assert = require('node:assert/strict');
 const MEMORY_LIMIT = 4 * 1024 ** 3;
 const SHAPES = Object.freeze({ landscape: [1024, 576], standard: [1024, 768], square: [1024, 1024], portrait: [576, 1024] });
 function options(args) {
-  const result = {}, allowed = ['work-dir', 'report', 'long-edge', 'shape', 'child'];
+  const result = {}, allowed = ['work-dir', 'report', 'long-edge', 'shape', 'child', 'dimensions'];
   for (let i = 0; i < args.length; i += 2) {
     assert(args[i].startsWith('--') && allowed.includes(args[i].slice(2)) && args[i + 1] && !args[i + 1].startsWith('--'), `Invalid argument ${args[i]}`);
     const key = args[i].slice(2); assert(!(key in result), `Duplicate --${key}`); result[key] = args[i + 1];
@@ -28,7 +28,7 @@ function diskBytes(dir) {
 }
 function save(filename, value) {
   fs.mkdirSync(path.dirname(filename), { recursive: true });
-  fs.writeFileSync(filename, JSON.stringify(value, null, 2) + '\n');
+  fs.writeFileSync(filename, JSON.stringify(value, (key, entry) => ['destination', 'filesystemPath'].includes(key) ? undefined : entry, 2) + '\n');
 }
 const rssHighWater = () => process.resourceUsage().maxRSS * 1024;
 const elapsed = start => Number(process.hrtime.bigint() - start) / 1e6;
@@ -76,15 +76,23 @@ async function fixtureRecords(sharp, p, job, manifest) {
   return { records: manifest.regions.length, colorAndAlphaPerturbedTiles: altered, modelCalls: 0, registrationCalls: 0 };
 }
 
+function customDimensions(value) {
+  assert(typeof value === 'string' && /^[1-9][0-9]*x[1-9][0-9]*$/.test(value), '--dimensions must be WIDTHxHEIGHT');
+  const dims = value.split('x').map(Number); require('./planner.cjs').planGrid(...dims); return dims;
+}
+function gcd(a, b) { return b ? gcd(b, a % b) : a; }
+
 async function child(opt) {
   const sharp = require('sharp'), p = require('./pipeline.cjs');
-  const shape = opt.shape, sourceDims = SHAPES[shape], longEdge = Number(opt['long-edge']);
+  const shape = opt.shape, exact = opt.dimensions ? customDimensions(opt.dimensions) : null;
+  const divisor = exact ? gcd(...exact) : 1;
+  const sourceDims = exact ? exact.map(d => d / divisor) : SHAPES[shape], longEdge = exact ? Math.max(...exact) : Number(opt['long-edge']);
   assert(sourceDims && Number.isInteger(longEdge) && longEdge >= 1024, 'Child requires a valid shape and long edge >= 1024');
   const work = path.resolve(opt['work-dir']), reportPath = path.resolve(opt.report);
   fs.mkdirSync(work, { recursive: true });
   const temp = fs.mkdtempSync(path.join(work, `${shape}-`)), job = path.join(temp, 'job'), output = path.join(temp, 'export'), source = path.join(temp, 'source.png');
   const report = {
-    shape, requestedLongEdge: longEdge, expectedDimensions: sourceDims.map(d => Math.round(d * longEdge / 1024)),
+    shape, requestedLongEdge: longEdge, expectedDimensions: exact || sourceDims.map(d => Math.round(d * longEdge / 1024)),
     testKind: 'synthetic export acceptance; no image model or registration', platform: process.platform,
     node: process.version, memoryLimitBytes: MEMORY_LIMIT, stages: [], passed: false,
     diskMeasurement: 'Recursive file sizes at stage ends. Peak estimate adds transient raster bytes reported by the renderer; it is not a continuously sampled exact disk peak.'
@@ -122,6 +130,10 @@ async function child(opt) {
     assert.deepEqual([verified.width, verified.height], report.expectedDimensions);
     assert.equal(verified.pixelsCompared, manifest.width * manifest.height, 'Verification must cover every output pixel');
     report.verification = verified;
+    const replanned = await stage('replan-export', () => p.plan(path.join(output, 'refined.png'), { 'long-edge': longEdge - 1 }));
+    assert.deepEqual([replanned.width, replanned.height], report.expectedDimensions);
+    assert.equal(replanned.preservedLargerSource, true);
+    report.largeSourceReplanPassed = true;
     report.exportBytes = { png: fs.statSync(path.join(output, 'refined.png')).size, svg: fs.statSync(path.join(output, 'refined.svg')).size };
     report.peakResidentBytes = rssHighWater();
     assert(report.peakResidentBytes <= MEMORY_LIMIT, `Peak RSS ${report.peakResidentBytes} exceeds 4 GiB`);
@@ -143,21 +155,24 @@ async function child(opt) {
 
 async function parent(opt) {
   const longEdge = opt['long-edge'] === undefined ? 15360 : Number(opt['long-edge']);
-  assert(Number.isInteger(longEdge) && longEdge >= 1024 && longEdge <= 16000, '--long-edge must be an integer from 1024 to 16000');
-  const selected = opt.shape ? [opt.shape] : Object.keys(SHAPES);
-  assert(selected.every(s => Object.prototype.hasOwnProperty.call(SHAPES, s)), '--shape must be landscape, standard, square or portrait');
+  assert(!opt.dimensions || (!opt.shape && !opt['long-edge']), '--dimensions is exclusive with --shape and --long-edge');
+  const exact = opt.dimensions ? customDimensions(opt.dimensions) : null;
+  assert(Number.isSafeInteger(longEdge) && longEdge >= 1024, '--long-edge must be an integer >= 1024');
+  const selected = exact ? ['custom'] : opt.shape ? [opt.shape] : Object.keys(SHAPES);
+  assert(exact || selected.every(s => Object.prototype.hasOwnProperty.call(SHAPES, s)), '--shape must be landscape, standard, square or portrait');
+  for (const shape of selected) { const dims = exact || SHAPES[shape].map(d => Math.round(d * longEdge / 1024)); require('./planner.cjs').planGrid(...dims); }
   const work = path.resolve(opt['work-dir'] || path.join('work', 'stress'));
   fs.mkdirSync(work, { recursive: true }); const run = fs.mkdtempSync(path.join(work, 'acceptance-'));
   const reportPath = path.resolve(opt.report || path.join(run, 'report.json'));
   const result = {
     schemaVersion: 1, testKind: 'synthetic large-canvas infrastructure acceptance', startedAt: new Date().toISOString(),
-    longEdge, full16kAcceptance: longEdge === 15360 && selected.length === 4, memoryLimitBytes: MEMORY_LIMIT,
+    longEdge: exact ? Math.max(...exact) : longEdge, requestedDimensions: exact, full16kAcceptance: !exact && longEdge === 15360 && selected.length === 4, memoryLimitBytes: MEMORY_LIMIT,
     platform: process.platform, node: process.version, execution: 'sequential isolated child processes', shapes: [], passed: false
   };
   for (const shape of selected) {
     const childReport = path.join(run, `${shape}.json`);
     const status = await new Promise((resolve, reject) => {
-      const proc = spawn(process.execPath, [__filename, '--child', 'true', '--work-dir', run, '--report', childReport, '--long-edge', String(longEdge), '--shape', shape], { stdio: ['ignore', 'inherit', 'inherit'], windowsHide: true });
+      const proc = spawn(process.execPath, [__filename, '--child', 'true', '--work-dir', run, '--report', childReport, '--long-edge', String(longEdge), '--shape', shape, ...(exact ? ['--dimensions', opt.dimensions] : [])], { stdio: ['ignore', 'inherit', 'inherit'], windowsHide: true });
       proc.once('error', reject); proc.once('exit', (code, signal) => resolve({ code, signal }));
     });
     const report = fs.existsSync(childReport) ? JSON.parse(fs.readFileSync(childReport, 'utf8')) : { shape, passed: false, error: 'Child exited before writing its report' };

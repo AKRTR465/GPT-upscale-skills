@@ -5,7 +5,7 @@ on:
   workflow_dispatch:
     inputs:
       stress:
-        description: Run the four-shape full 16K acceptance suite on Windows and Linux
+        description: Run full 16K and 322 MP acceptance on Windows and Linux
         type: boolean
         default: false
 permissions:
@@ -41,10 +41,13 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run test:stress -- --work-dir work/stress --report work/stress-report.json
+      - run: npm run test:stress -- --dimensions 37258x8640 --work-dir work/stress --report work/322mp-report.json
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: ${{ runner.os }}-16k-acceptance
-          path: work/stress-report.json
+          name: ${{ runner.os }}-large-canvas-acceptance
+          path: |
+            work/stress-report.json
+            work/322mp-report.json
           if-no-files-found: warn
           retention-days: 14

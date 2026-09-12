@@ -1,0 +1,137 @@
+{
+  "schemaVersion": 1,
+  "testKind": "synthetic large-canvas infrastructure acceptance",
+  "startedAt": "2026-09-12T23:45:34.111Z",
+  "longEdge": 37258,
+  "requestedDimensions": [
+    37258,
+    8640
+  ],
+  "full16kAcceptance": false,
+  "memoryLimitBytes": 4294967296,
+  "platform": "win32",
+  "node": "v24.13.1",
+  "execution": "sequential isolated child processes",
+  "shapes": [
+    {
+      "shape": "custom",
+      "requestedLongEdge": 37258,
+      "expectedDimensions": [
+        37258,
+        8640
+      ],
+      "testKind": "synthetic export acceptance; no image model or registration",
+      "platform": "win32",
+      "node": "v24.13.1",
+      "memoryLimitBytes": 4294967296,
+      "stages": [
+        {
+          "name": "source",
+          "milliseconds": 1265.7434,
+          "sampledPeakRssBytes": 372899840,
+          "cumulativeOsPeakRssBefore": 56553472,
+          "cumulativeOsPeakRssAfter": 372899840,
+          "diskBytesAfter": 21848146,
+          "temporaryRasterBytes": 0
+        },
+        {
+          "name": "prepare",
+          "milliseconds": 22836.6309,
+          "sampledPeakRssBytes": 356610048,
+          "cumulativeOsPeakRssBefore": 372899840,
+          "cumulativeOsPeakRssAfter": 372899840,
+          "diskBytesAfter": 1095264838,
+          "temporaryRasterBytes": 0
+        },
+        {
+          "name": "synthetic-records",
+          "milliseconds": 14137.9224,
+          "sampledPeakRssBytes": 147447808,
+          "cumulativeOsPeakRssBefore": 372899840,
+          "cumulativeOsPeakRssAfter": 372899840,
+          "diskBytesAfter": 1340640892,
+          "temporaryRasterBytes": 0
+        },
+        {
+          "name": "assemble",
+          "milliseconds": 54288.1951,
+          "sampledPeakRssBytes": 421154816,
+          "cumulativeOsPeakRssBefore": 372899840,
+          "cumulativeOsPeakRssAfter": 421900288,
+          "diskBytesAfter": 1773044227,
+          "temporaryRasterBytes": 1287640576
+        },
+        {
+          "name": "verify",
+          "milliseconds": 65530.1882,
+          "sampledPeakRssBytes": 598069248,
+          "cumulativeOsPeakRssBefore": 421900288,
+          "cumulativeOsPeakRssAfter": 598069248,
+          "diskBytesAfter": 1773045280,
+          "temporaryRasterBytes": 976002058
+        },
+        {
+          "name": "replan-export",
+          "milliseconds": 99.8342,
+          "sampledPeakRssBytes": 469463040,
+          "cumulativeOsPeakRssBefore": 598069248,
+          "cumulativeOsPeakRssAfter": 598069248,
+          "diskBytesAfter": 1773045280,
+          "temporaryRasterBytes": 0
+        }
+      ],
+      "passed": true,
+      "diskMeasurement": "Recursive file sizes at stage ends. Peak estimate adds transient raster bytes reported by the renderer; it is not a continuously sampled exact disk peak.",
+      "tileCount": 420,
+      "maxCrop": {
+        "width": 1016,
+        "height": 992
+      },
+      "fixture": {
+        "records": 420,
+        "colorAndAlphaPerturbedTiles": 26,
+        "modelCalls": 0,
+        "registrationCalls": 0
+      },
+      "verification": {
+        "width": 37258,
+        "height": 8640,
+        "diskCheck": {
+          "status": "passed",
+          "checkedAt": "2026-09-12T23:47:09.521Z",
+          "availableBytes": 265325633536,
+          "requiredBytes": 1439859252,
+          "reservedBytes": 0
+        },
+        "meanChannelDifference": 0.011524573560802916,
+        "maxChannelDifference": 3,
+        "fractionAbove10": 0,
+        "embeddedImages": 753,
+        "maxDataAttributeBytes": 1371250,
+        "svgSha256": "1fcd006c879c8d281aae6c079342046004da0f5e242675aa39c0dbbd093d93de",
+        "pngSha256": "e7f3d6aadb7a9bb5dd45807a0452d725454be82037031ca22bdfd8535030e8e8",
+        "pixelsCompared": 321909120,
+        "verificationWindows": 333,
+        "peakResidentBytes": 598069248,
+        "temporaryRasterBytes": 976002058,
+        "verificationMilliseconds": 62592,
+        "visualQA": "Separate visual inspection required; this verifies render and file consistency only.",
+        "passed": true
+      },
+      "largeSourceReplanPassed": true,
+      "exportBytes": {
+        "png": 113778294,
+        "svg": 317895207
+      },
+      "peakResidentBytes": 598069248,
+      "elapsedMilliseconds": 158163.4881,
+      "maxObservedDiskBytes": 1773045280,
+      "estimatedPeakDiskBytes": 3060684803,
+      "temporaryFixtureRemoved": true,
+      "childExitCode": 0,
+      "childSignal": null
+    }
+  ],
+  "passed": true,
+  "completedAt": "2026-09-12T23:48:12.875Z"
+}

@@ -1,8 +1,7 @@
 'use strict';
 // Shared, read-only geometry planning. No image generation or filesystem writes.
 const sharp = require('sharp');
-const MAX_PIXELS = 256000000;
-const MAX_TILES = 1000;
+const { MAX_TILES, validateCanvas, imageOptions, inspectImage, resourceEstimate, checkDisk } = require('./resources.cjs');
 const PRESETS = Object.freeze({ '2k': 2560, '4k': 3840, '8k': 7680, '16k': 15360 });
 const LAYOUT_OPTIONS = ['max-tile-edge', 'overlap', 'pad', 'cols', 'rows', 'feather'];
 const SIZE_OPTIONS = ['preset', 'long-edge', 'short-edge'];
@@ -15,10 +14,6 @@ function integer(value, fallback, name, min = 1) {
 }
 function checkOptions(opt, allowed) {
   for (const key of Object.keys(opt)) assert(allowed.includes(key), `Unknown option --${key}`);
-}
-function validateCanvas(width, height) {
-  assert(Number.isSafeInteger(width) && Number.isSafeInteger(height) && width > 0 && height > 0, 'Canvas dimensions must be positive integers');
-  assert(width * height <= MAX_PIXELS, `Canvas exceeds ${MAX_PIXELS} pixels (256 MP); reduce the requested dimensions`);
 }
 function planGrid(width, height, opt = {}) {
   checkOptions(opt, LAYOUT_OPTIONS); validateCanvas(width, height);
@@ -54,31 +49,24 @@ function planGrid(width, height, opt = {}) {
       region.left + region.width <= width && region.top + region.height <= height, 'Invalid planned crop geometry');
     regions.push({ id, kind: 'tile', row, col, core, region, input: `inputs/${id}.png` });
   }
-  const pixelCount = width * height, cropPixels = regions.reduce((sum, t) => sum + t.region.width * t.region.height, 0);
+  const pixelCount = width * height;
   return {
     schemaVersion: 2, layoutVersion: 'uniform-core-v2', width, height, maxTileEdge, cols, rows, pad, overlap, feather,
     pixelCount, tileCount: regions.length,
     maxCrop: { width: Math.max(...regions.map(t => t.region.width)), height: Math.max(...regions.map(t => t.region.height)) },
     regions,
-    resources: {
-      maxPixels: MAX_PIXELS, maxEditableBlocks: MAX_TILES, canvasRgbaBytes: pixelCount * 4,
-      // Base TIFF + canvas TIFF + uncompressed-equivalent inputs/results/aligned
-      // tiles. This is planning guidance, not a disk-space reservation or cap.
-      estimatedTemporaryDiskBytes: pixelCount * 8 + cropPixels * 12,
-      diskEstimateNote: 'Estimate for base/canvas and three tile copies; excludes final exports, extra detail blocks, retries and filesystem overhead.',
-      checksPassed: true
-    }
+    resources: resourceEstimate(width, height, regions)
   };
 }
-async function plan(source, opt = {}) {
-  checkOptions(opt, [...LAYOUT_OPTIONS, ...SIZE_OPTIONS]);
+async function plan(source, opt = {}, destination = null) {
+  checkOptions(opt, [...LAYOUT_OPTIONS, ...SIZE_OPTIONS, 'work-dir']);
   const selectors = SIZE_OPTIONS.filter(key => own(opt, key));
   assert(selectors.length <= 1, 'Choose only one of --preset, --long-edge OR --short-edge');
   const preset = selectors.length === 0 ? '8k' : own(opt, 'preset') ? opt.preset : null;
   assert(preset === null || own(PRESETS, preset), 'Invalid --preset: choose 2k, 4k, 8k or 16k');
   const requestedLongEdge = preset ? PRESETS[preset] : own(opt, 'long-edge') ? integer(opt['long-edge'], undefined, 'long-edge') : null;
   const requestedShortEdge = own(opt, 'short-edge') ? integer(opt['short-edge'], undefined, 'short-edge') : null;
-  const meta = await sharp(source, { limitInputPixels: MAX_PIXELS }).metadata();
+  const meta = await inspectImage(source);
   assert(meta.width && meta.height, 'Source does not have readable image dimensions');
   const swap = meta.orientation >= 5 && meta.orientation <= 8;
   const sourceWidth = swap ? meta.height : meta.width, sourceHeight = swap ? meta.width : meta.height;
@@ -89,11 +77,14 @@ async function plan(source, opt = {}) {
   const grid = planGrid(width, height, layout);
   // A source without alpha is necessarily opaque; stats streams sources with
   // alpha instead of materializing a normalized full-canvas image buffer.
-  assert(!meta.hasAlpha || (await sharp(source, { limitInputPixels: MAX_PIXELS }).stats()).isOpaque,
+  assert(!meta.hasAlpha || (await sharp(source, imageOptions(meta.width, meta.height)).stats()).isOpaque,
     'Transparent sources need a separate alpha-preserving workflow');
+  const diskDestination = destination || opt['work-dir'];
+  if (own(opt, 'work-dir')) assert(typeof opt['work-dir'] === 'string' && opt['work-dir'].trim(), 'Invalid --work-dir');
+  if (diskDestination) grid.resources.diskCheck = checkDisk(diskDestination, grid.resources.estimatedAdditionalPrepareBytes);
   return {
     ...grid, sourceWidth, sourceHeight, preset, requestedLongEdge, requestedShortEdge,
     scale, preservedLargerSource: requestedShortEdge !== null ? Math.min(sourceWidth, sourceHeight) > requestedShortEdge : Math.max(sourceWidth, sourceHeight) > requestedLongEdge
   };
 }
-module.exports = { plan, planGrid, MAX_PIXELS, MAX_TILES };
+module.exports = { plan, planGrid, MAX_TILES };

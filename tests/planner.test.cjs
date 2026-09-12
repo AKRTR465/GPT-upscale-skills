@@ -6,7 +6,7 @@ const os = require('node:os');
 const path = require('node:path');
 const crypto = require('node:crypto');
 const sharp = require('sharp');
-const { plan, planGrid, MAX_PIXELS, MAX_TILES } = require('../scripts/planner.cjs');
+const { plan, planGrid, MAX_TILES } = require('../scripts/planner.cjs');
 
 function checkCoverage(p) {
   assert.equal(p.regions.length, p.cols * p.rows);
@@ -104,8 +104,9 @@ test('invalid limits, padding, numeric values, layouts and budgets are rejected'
   for (const [options, error] of invalid) assert.throws(() => planGrid(1536, 1536, options), error, JSON.stringify(options));
   assert.throws(() => planGrid(1.5, 100), /positive integers/);
   assert.throws(() => planGrid(0, 100), /positive integers/);
-  assert.throws(() => planGrid(16001, 16000), /256 MP/);
-  assert.equal(planGrid(16000, 16000).pixelCount, MAX_PIXELS);
+  assert.equal(planGrid(16001, 16000).pixelCount, 256016000);
+  assert.equal(planGrid(16000, 16000).pixelCount, 256000000);
+  assert.throws(() => planGrid(32768, 32768), /classic TIFF/);
   assert.throws(() => planGrid(4000, 4000, { 'max-tile-edge': 128, overlap: 4 }), /1000/);
   const p = planGrid(5000, 500, { 'max-tile-edge': 100, overlap: 4, cols: 100, rows: 10 });
   assert.equal(p.tileCount, MAX_TILES); checkCoverage(p);
@@ -133,6 +134,6 @@ test('source orientation, larger originals, custom edges and opacity are respect
   await assert.rejects(plan(rotated, { 'long-edge': 20, 'short-edge': 10 }), /Choose only one/);
   await assert.rejects(plan(rotated, { preset: '3k' }), /Invalid --preset/);
   await assert.rejects(plan(rotated, { 'long-edge': 0 }), /integer/);
-  await assert.rejects(plan(rotated, { 'short-edge': 20000 }), /256 MP/);
+  await assert.rejects(plan(rotated, { 'short-edge': 22000 }), /1000/);
   assert.deepEqual(snapshot(dir), before);
 });
