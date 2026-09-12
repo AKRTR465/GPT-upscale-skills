@@ -2,6 +2,8 @@
 
 These are editable scaffolds, not exact tool arguments. Replace bracketed content with observations of the actual crop. Store the final filled prompt verbatim in a UTF-8 text file for `ingest`.
 
+Use the actual capped crop from `inputs/` as the edit target. Every target and its destination fit within 1024×1024, including overlap. For a split detail group, edit each child separately; the full-object thumbnail in `references/` is context only. If the host supports separate references, clearly label the capped crop as the target and the overview as composition/style context. Do not ask the editor to output the overview instead of the crop.
+
 ## Shared tile instruction
 
 ```text

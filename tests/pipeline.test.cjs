@@ -45,7 +45,7 @@ test('complete job: nonuniform grid, detail mask, retained region, actual SVG re
   await assert.rejects(p.assemble(job, output), /already exists/);
   await assert.rejects(p.prepare(src, job, {}), /already exists/);
   // Altering an already accepted mask must invalidate both status and export.
-  fs.appendFileSync(path.join(job, 'masks/detail.png'), 'changed');
+  fs.appendFileSync(path.join(job, 'masks/detail.tiff'), 'changed');
   assert.equal(p.status(job).regions.find(r => r.id === 'detail').state, 'stale');
   await assert.rejects(p.assemble(job, path.join(root, 'stale')), /stale/);
 });
@@ -87,7 +87,7 @@ test('short-edge sizing, preserve larger input, EXIF orientation and invalid opt
   const rotated = path.join(root, 'rotated.jpg'); await sharp(src).withMetadata({ orientation: 6 }).jpeg().toFile(rotated);
   const c = await p.prepare(rotated, path.join(root, 'rotated'), { 'long-edge': '400', cols: '1', rows: '1', pad: '0' });
   assert.deepEqual(c.dimensions, [100, 400]);
-  await assert.rejects(p.prepare(src, path.join(root, 'bad'), { cols: '0' }), /numeric/);
+  await assert.rejects(p.prepare(src, path.join(root, 'bad'), { cols: '0' }), /Invalid --cols/);
   await assert.rejects(p.prepare(src, path.join(root, 'bad'), { unknown: '1' }), /Unknown option/);
   await assert.rejects(p.prepare(src, path.join(root, 'bad'), { 'long-edge': '400', 'short-edge': '200' }), /Choose/);
   const alpha = path.join(root, 'transparent.png');

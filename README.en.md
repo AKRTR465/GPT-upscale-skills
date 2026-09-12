@@ -1,6 +1,6 @@
 # GPT Upscale Skills
 
-**Reconstruct detail with overlapping AI image edits, align and blend the patches, then deliver a large PNG and a layered SVG.**
+**Automatically plan overlapping edit tiles no larger than 1024 pixels per edge, reconstruct detail with AI, then align and blend into 2K, 4K, 8K, 16K or custom-size PNG and layered SVG outputs.**
 
 [中文](README.md) · [Skill instructions](SKILL.md) · [CLI](references/cli.md) · [Operating guide](references/workflow.md)
 
@@ -24,16 +24,33 @@ See [example provenance](examples/README.md) for comparison stages, dimensions, 
 
 ## What it does
 
-1. Inspect the oriented source and choose a target that preserves aspect ratio.
-2. Plan overlapping tiles according to the editor's actual output capacity.
+1. Inspect the oriented source and choose a preset or custom target that preserves aspect ratio.
+2. Read the JSON plan, then prepare overlapping crops capped at 1024×1024 including context padding.
 3. Edit each crop using shared invariants and crop-specific observations.
 4. Align through bounded affine ECC and smoothed, limited optical flow.
 5. Match low-frequency color, choose continuous low-difference seams, and blend.
-6. Apply separately reviewed, shaped detail layers for faces or important objects.
+6. Apply separately reviewed, shaped detail layers for faces or important objects. Oversized regions become child edits; assemble them before applying the parent mask once.
 7. Export a PNG and standalone SVG with embedded raster layers.
-8. Render the actual full-size SVG, compare it with the PNG, and inspect visual quality separately.
+8. Render bounded windows from the saved SVG at 1:1 scale, compare every pixel with the PNG, and inspect visual quality separately.
 
 The manifest is the work queue. Missing, stale or unreviewed regions block final export. Per-region retries archive earlier attempts. Source-based fallbacks remain explicitly labeled. Authorized subagents may own separate images or region IDs; sequential operation is supported too.
+
+## Resolution presets and the 1K cap
+
+Presets set the long edge and preserve aspect ratio. The default is 8K. A source already larger than the requested size is kept at its original dimensions, so reports distinguish the request from the actual canvas. The project uses 2K/QHD display naming for a 2560×1440 landscape output; other aspect ratios use the same long edge.
+
+| Preset | Long edge | 16:9 destination | Default grid | Base edits |
+|---|---:|---:|---:|---:|
+| 2K / QHD | 2560 | 2560×1440 | 3×2 | 6 |
+| 4K | 3840 | 3840×2160 | 5×3 | 15 |
+| 8K | 7680 | 7680×4320 | 9×5 | 45 |
+| 16K | 15360 | 15360×8640 | 18×10 | 180 |
+
+The table assumes the default 1024 cap, 128-pixel adjacent overlap and a source no larger than the target. Detail edits and retries are additional. Other aspect ratios receive their own grids. Use a custom `--long-edge` for sizes such as 2048 or 4096.
+
+Default padding is 64 pixels per side, leaving a core limit of `1024 − 128 = 896`. An axis larger than 1024 uses `ceil(destination edge / 896)` equal cores; an axis already within the cap uses one core. The planner validates the resulting integer rectangles for cap, coverage and neighbor constraints. Manual grids must pass the same checks. Downscaling a large edit region does not bypass its destination-size cap.
+
+Naming references: [BenQ on 2K/QHD](https://www.benq.com/en-us/knowledge-center/knowledge/why-choose-a-27-monitor-for-qhd-1440p-gaming.html), [ITU on 4K/8K](https://www.itu.int/hub/2020/04/new-itu-reports-help-shape-next-tv-revolution-high-dynamic-range-hdr/), and [VESA's 16K configuration](https://vesa.org/press/vesa-publishes-displayport-2-0-video-standard-enabling-support-for-beyond-8k-resolutions-higher-refresh-rates-for-4k-hdr-and-virtual-reality-applications/). Applying these long edges to arbitrary image aspect ratios is this project's convention.
 
 ## Install
 
@@ -50,21 +67,35 @@ npm ci
 Ensure the host sees `tiled-image-refinement/SKILL.md`, then refresh discovery if needed. For development, clone into any working directory.
 
 ```text
-Use $tiled-image-refinement to reconstruct this illustration at a 7680-pixel
-long edge, preserving its aspect ratio. Refine the face independently,
-deliver a PNG and layered SVG, and save prompts and comparison records.
+Use $tiled-image-refinement to plan this illustration at 8K, preserving its
+aspect ratio and keeping every edit crop within 1024 pixels per edge including
+overlap. Reconstruct the tiles, refine the face independently, and deliver a
+PNG and layered SVG with prompts and comparison records.
 ```
 
 No generation model, service or API key is bundled. The CLI does deterministic postprocessing only. Use the host image editor for redraws; it does not silently switch to a paid API when that capability is missing.
 
-For manual commands, masks, resumability and output records, read [the CLI guide](references/cli.md). Run `npm run check` and `npm test` for synthetic functional tests that make no model calls.
+```sh
+node scripts/pipeline.cjs plan input.png --preset 8k --max-tile-edge 1024 --overlap 128
+node scripts/pipeline.cjs prepare input.png jobs/example --preset 8k --max-tile-edge 1024 --overlap 128
+```
+
+`plan` writes only JSON to stdout and creates no job or base image. `prepare` uses the same planner to create `base.tiff`, crops and a manifest. Change `--preset` for another resolution. Explicit presets, custom long edges and custom short edges are mutually exclusive.
+
+For manual commands, masks, resumability and output records, read [the CLI guide](references/cli.md). Run `npm run check` and `npm test` for synthetic functional tests that make no model calls. A separate 16K release stress suite covers landscape, 4:3, square and portrait exports, with a 4 GiB single-process peak-memory acceptance threshold.
 
 ## Resolution and limits
 
-"8K" normally means a 7680-pixel long edge here, not a fixed aspect ratio. Already larger sources are preserved by default; a minimum short edge is a separate option. Native generated crops can be smaller than their destination, so interpolation remains part of placement. SVG layers are bitmaps, not infinitely scalable vector paths.
+The hard 1K cap applies to actual edit inputs and their destination regions, not to the model's native return dimensions. Returned crops can be smaller, so interpolation remains part of placement. SVG layers are bitmaps, not infinitely scalable vector paths. Each job chooses one resolution; it does not automatically generate every preset or repeatedly redraw through increasing sizes.
+
+The limits are **256 megapixels per canvas and 1000 actual edit blocks per job**, including detail children. A 15360×15360 16K square is 235.9 MP. TIFF-backed normalization and compositing, incremental SVG writing and windowed full-pixel verification bound processing buffers. Large assembly and verification should run serially, with temporary disk space reserved from the plan's resource estimate.
+
+Legacy job coordinates remain unchanged. Existing artifacts remain processable; new imports into oversized legacy regions are rejected, requiring a new job planned from the original source.
 
 Added texture and fine structure are interpretive. Correlation and render matching do not prove authenticity or visual improvement. Preserve deliberate blur, grain and art style; inspect identity, anatomy and seams at 100%.
 
 The helper supports opaque still images. Optional requested object/overlay removal uses a separately reviewed clean source; it is not automatically added to enlargement tasks. See [the operating guide](references/workflow.md).
 
 Code and documentation: [MIT](LICENSE). Example artwork: separate rights retained by the respective rights holders, as described in [examples](examples/README.md).
+
+The v0.2.0 local Windows acceptance passed all four 16K aspect ratios, with a maximum process peak of **555.89 MiB** for the square image. Every PNG/SVG pair was compared at every pixel. The [raw acceptance report](validation/windows-16k.json) records dimensions, time, differences and disk estimates.

@@ -5,10 +5,16 @@ const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
 const sharp = require('sharp');
+const { plan, planGrid, MAX_TILES } = require('./planner.cjs');
 sharp.concurrency(1);
 sharp.cache({ memory: 128, files: 8, items: 24 });
 const clamp = (x, a, b) => Math.max(a, Math.min(b, x));
-const hash = p => crypto.createHash('sha256').update(fs.readFileSync(p)).digest('hex');
+function hash(p) {
+  const h = crypto.createHash('sha256'), fd = fs.openSync(p, 'r'), chunk = Buffer.allocUnsafe(1024 * 1024);
+  try { let n; while ((n = fs.readSync(fd, chunk, 0, chunk.length, null))) h.update(chunk.subarray(0, n)); }
+  finally { fs.closeSync(fd); }
+  return h.digest('hex');
+}
 const read = p => JSON.parse(fs.readFileSync(p, 'utf8'));
 const xml = s => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&apos;' })[c]);
 const ID = /^[a-z][a-z0-9-]{0,63}$/;
@@ -25,7 +31,7 @@ function int(v, fallback, min = 1) { const n = num(v, fallback, min); assert(Num
 function check(opt, allowed) { for (const k of Object.keys(opt)) assert(allowed.includes(k), `Unknown option --${k}`); }
 function job(dir) {
   const root = path.resolve(dir), m = read(path.join(root, 'manifest.json'));
-  assert(m.schemaVersion === 1, 'Unsupported manifest version'); return { root, m };
+  assert([1, 2].includes(m.schemaVersion), 'Unsupported manifest version'); return { root, m };
 }
 function file(j, rel) {
   const p = path.resolve(j.root, rel), r = path.relative(j.root, p);
@@ -37,63 +43,102 @@ function record(j, id) { const p = recPath(j, id); return fs.existsSync(p) ? rea
 function geometry(m, t) {
   const r = t.region;
   assert(Object.values(r).every(Number.isInteger) && r.left >= 0 && r.top >= 0 && r.width > 0 && r.height > 0 && r.left + r.width <= m.width && r.top + r.height <= m.height, 'Invalid region geometry');
+  if (m.schemaVersion === 2) assert(r.width <= m.maxTileEdge && r.height <= m.maxTileEdge && m.maxTileEdge <= 1024, 'Editing region exceeds the 1K limit');
+}
+function baseHash(j) { return j.baseHash ||= hash(file(j, j.m.base)); }
+function sharedHash(j, rel) {
+  const hashes = j.sharedHashes ||= new Map();
+  if (!hashes.has(rel)) hashes.set(rel, hash(file(j, rel)));
+  return hashes.get(rel);
 }
 function signature(j, t, r) {
+  const group = t.groupId ? j.m.detailGroups?.find(g => g.id === t.groupId) : null;
+  assert(!t.groupId || group, 'Missing detail group');
   return crypto.createHash('sha256').update(JSON.stringify({ region: t, input: hash(file(j, t.input)),
     generated: hash(file(j, r.generated)), mask: t.mask ? hash(file(j, t.mask)) : null,
-    base: hash(file(j, j.m.base)), method: r.method, prompt: r.prompt, reason: r.reason })).digest('hex');
+    base: baseHash(j), method: r.method, prompt: r.prompt, reason: r.reason,
+    ...(group ? { group, groupMask: sharedHash(j, group.mask) } : {}),
+    ...(t.context ? { contextHash: sharedHash(j, t.context) } : {}) })).digest('hex');
 }
-async function crop(j, t) { await sharp(file(j, j.m.base)).extract(t.region).png().toFile(file(j, t.input)); t.inputSha256 = hash(file(j, t.input)); }
+async function crop(j, t) {
+  geometry(j.m, t);
+  await sharp(file(j, j.m.base)).extract(t.region).png().toFile(file(j, t.input));
+  const meta = await sharp(file(j, t.input)).metadata();
+  assert(meta.width === t.region.width && meta.height === t.region.height && meta.width <= 1024 && meta.height <= 1024, 'Crop dimensions violate the 1K plan');
+  t.inputSha256 = hash(file(j, t.input));
+}
 
 async function prepare(source, dir, opt = {}) {
-  check(opt, ['long-edge', 'short-edge', 'cols', 'rows', 'pad', 'feather']);
-  assert(!(opt['long-edge'] && opt['short-edge']), 'Choose long-edge OR short-edge');
   const root = path.resolve(dir), src = path.resolve(source);
   assert(!fs.existsSync(root), 'Job directory already exists; use a new job');
-  assert((await sharp(src).stats()).isOpaque, 'Transparent sources need a separate alpha-preserving workflow');
-  const normalized = await sharp(src).rotate().toColourspace('srgb').removeAlpha().png().toBuffer({ resolveWithObject: true });
-  const sw = normalized.info.width, sh = normalized.info.height, target = int(opt['short-edge'] || opt['long-edge'], 7680);
-  const scale = Math.max(1, target / (opt['short-edge'] ? Math.min(sw, sh) : Math.max(sw, sh)));
-  const width = Math.round(sw * scale), height = Math.round(sh * scale);
-  assert(width * height <= 150000000, 'Helper limit: 150 megapixels; reduce the canvas or adapt memory handling');
-  const cols = int(opt.cols, width > height * 3 ? 6 : width >= height ? 4 : 3);
-  const rows = int(opt.rows, width > height * 3 ? 2 : width >= height ? 3 : 4);
-  const pad = int(opt.pad, 224, 0), feather = num(opt.feather, 48, 0.01);
-  assert(cols <= width && rows <= height && cols * rows <= 1000, 'Invalid grid');
-  assert(pad < Math.min(width / cols, height / rows) / 2, 'Padding must be less than half the smallest core edge');
-  assert(cols * rows === 1 || pad >= 2, 'Multi-tile jobs need padding of at least 2 pixels');
+  const planned = await plan(src, opt);
+  // Plan validates parameters and opacity before any task directory is created.
   fs.mkdirSync(root, { recursive: true });
-  for (const d of ['inputs', 'generated', 'aligned', 'records', 'qa', 'masks']) fs.mkdirSync(path.join(root, d));
-  const m = { schemaVersion: 1, sourceName: path.basename(src), sourceSha256: hash(src), sourceWidth: sw, sourceHeight: sh,
-    width, height, cols, rows, pad, feather, base: 'base.png', regions: [] }, j = { root, m };
-  await sharp(normalized.data).resize(width, height, { kernel: 'lanczos3', fit: 'fill' }).png().toFile(file(j, m.base)); m.baseSha256 = hash(file(j, m.base));
-  for (let row = 0; row < rows; row++) for (let col = 0; col < cols; col++) {
-    const left = Math.round(col * width / cols), top = Math.round(row * height / rows);
-    const right = Math.round((col + 1) * width / cols), bottom = Math.round((row + 1) * height / rows);
-    const x = Math.max(0, left - pad), y = Math.max(0, top - pad), id = `r${row + 1}c${col + 1}`;
-    const t = { id, kind: 'tile', row, col, core: { left, top, width: right - left, height: bottom - top },
-      region: { left: x, top: y, width: Math.min(width, right + pad) - x, height: Math.min(height, bottom + pad) - y }, input: `inputs/${id}.png` };
-    await crop(j, t); m.regions.push(t);
+  try {
+    for (const d of ['inputs', 'generated', 'aligned', 'records', 'qa', 'masks', 'references']) fs.mkdirSync(path.join(root, d));
+    const m = { ...planned, sourceName: path.basename(src), sourceSha256: hash(src), base: 'base.tiff', detailGroups: [] }, j = { root, m };
+    await sharp(src).rotate().toColourspace('srgb').removeAlpha()
+      .resize(m.width, m.height, { kernel: 'lanczos3', fit: 'fill' })
+      .tiff({ compression: 'none', tile: true, tileWidth: 256, tileHeight: 256 }).toFile(file(j, m.base));
+    m.baseSha256 = hash(file(j, m.base));
+    for (const t of m.regions) await crop(j, t);
+    write(path.join(root, 'manifest.json'), m);
+    const z = Math.max(m.width, m.height) / Math.min(1800, Math.max(m.width, m.height));
+    const pw = Math.max(1, Math.round(m.width / z)), ph = Math.max(1, Math.round(m.height / z));
+    const overlay = `<svg xmlns="http://www.w3.org/2000/svg" width="${pw}" height="${ph}" viewBox="0 0 ${m.width} ${m.height}">${m.regions.map(t => `<rect x="${t.core.left}" y="${t.core.top}" width="${t.core.width}" height="${t.core.height}" fill="none" stroke="#00ffb7" stroke-width="${3 * z}"/><text x="${t.core.left + 12 * z}" y="${t.core.top + 28 * z}" font-size="${22 * z}" fill="#00ffb7">${t.id}</text>`).join('')}</svg>`;
+    await sharp(file(j, m.base)).resize(pw, ph).composite([{ input: Buffer.from(overlay) }]).jpeg().toFile(file(j, 'qa/plan.jpg'));
+    return { job: root, dimensions: [m.width, m.height], tiles: m.regions.length, overlap: m.overlap, maxCrop: m.maxCrop, resources: m.resources };
+  } catch (e) {
+    // Only remove the new isolated directory created by this invocation.
+    fs.rmSync(root, { recursive: true, force: true }); throw e;
   }
-  write(path.join(root, 'manifest.json'), m);
-  const pw = Math.min(1800, width), ph = Math.round(height * pw / width), z = width / pw;
-  const overlay = `<svg xmlns="http://www.w3.org/2000/svg" width="${pw}" height="${ph}" viewBox="0 0 ${width} ${height}">${m.regions.map(t => `<rect x="${t.core.left}" y="${t.core.top}" width="${t.core.width}" height="${t.core.height}" fill="none" stroke="#00ffb7" stroke-width="${3 * z}"/><text x="${t.core.left + 12 * z}" y="${t.core.top + 28 * z}" font-size="${22 * z}" fill="#00ffb7">${t.id}</text>`).join('')}</svg>`;
-  await sharp(file(j, m.base)).resize(pw, ph).composite([{ input: Buffer.from(overlay) }]).jpeg().toFile(file(j, 'qa/plan.jpg'));
-  return { job: root, dimensions: [width, height], tiles: m.regions.length, overlap: pad * 2 };
 }
 async function addRegion(dir, id, opt) {
-  check(opt, ['left', 'top', 'width', 'height', 'mask']); const j = job(dir);
-  assert(ID.test(id) && !j.m.regions.some(t => t.id === id), 'Invalid or duplicate ID');
+  check(opt, ['left', 'top', 'width', 'height', 'mask', 'context']); const j = job(dir);
+  assert(ID.test(id) && id !== 'base' && !j.m.regions.some(t => t.id === id) && !(j.m.detailGroups || []).some(g => g.id === id), 'Invalid or duplicate ID');
   assert(j.m.regions.every(t => !record(j, t.id)), 'Finish planning before importing or dispatching workers');
   assert(opt.mask, 'Provide a grayscale placement mask');
-  const t = { id, kind: 'detail', region: { left: int(opt.left, NaN, 0), top: int(opt.top, NaN, 0), width: int(opt.width, NaN), height: int(opt.height, NaN) }, input: `inputs/${id}.png`, mask: `masks/${id}.png` };
-  geometry(j.m, t); const meta = await sharp(opt.mask).metadata();
-  assert(meta.width === t.region.width && meta.height === t.region.height, 'Mask dimensions must equal region dimensions');
-  await sharp(opt.mask).removeAlpha().greyscale().png().toFile(file(j, t.mask));
-  await crop(j, t); j.m.regions.push(t); write(path.join(j.root, 'manifest.json'), j.m); return { added: id };
+  const bounds = { left: int(opt.left, NaN, 0), top: int(opt.top, NaN, 0), width: int(opt.width, NaN), height: int(opt.height, NaN) };
+  geometry({ ...j.m, schemaVersion: 1 }, { region: bounds });
+  const meta = await sharp(opt.mask).metadata();
+  assert(meta.width === bounds.width && meta.height === bounds.height, 'Mask dimensions must equal region dimensions');
+  if (opt.context) await sharp(opt.context).metadata();
+  const maxEdge = j.m.maxTileEdge || 1024, oversized = bounds.width > maxEdge || bounds.height > maxEdge;
+  assert(!oversized || j.m.schemaVersion === 2, 'Legacy oversized detail: create a new 1K-planned job from the source');
+  let group, additions;
+  const mask = `masks/${id}.tiff`, context = opt.context ? `references/${id}-context.png` : undefined;
+  if (oversized) {
+    const grid = planGrid(bounds.width, bounds.height, { 'max-tile-edge': maxEdge, pad: j.m.pad, feather: j.m.feather });
+    group = { id, region: bounds, mask, context, cols: grid.cols, rows: grid.rows, pad: grid.pad, feather: grid.feather };
+    additions = grid.regions.map(t => {
+      const childId = `${id}-${t.id}`;
+      assert(ID.test(childId), 'Detail ID is too long for child IDs');
+      const shift = r => ({ ...r, left: r.left + bounds.left, top: r.top + bounds.top });
+      return { ...t, id: childId, kind: 'detail-tile', groupId: id, core: shift(t.core), region: shift(t.region), input: `inputs/${childId}.png`, ...(context ? { context } : {}) };
+    });
+  } else additions = [{ id, kind: 'detail', region: bounds, input: `inputs/${id}.png`, mask, ...(context ? { context } : {}) }];
+  assert(j.m.regions.length + additions.length <= MAX_TILES, 'Job exceeds 1000 editing blocks');
+  for (const t of additions) { geometry(j.m, t); assert(!j.m.regions.some(q => q.id === t.id), 'Duplicate child region ID'); }
+  const created = [file(j, mask), ...additions.map(t => file(j, t.input))];
+  try {
+    await sharp(opt.mask).removeAlpha().greyscale().tiff({ compression: 'none', tile: true }).toFile(file(j, mask));
+    if (context) {
+      fs.mkdirSync(path.dirname(file(j, context)), { recursive: true }); created.push(file(j, context));
+      await sharp(opt.context).rotate().resize({ width: 1024, height: 1024, fit: 'inside', withoutEnlargement: true }).png().toFile(file(j, context));
+    }
+    for (const t of additions) await crop(j, t);
+    j.m.regions.push(...additions);
+    if (group) (j.m.detailGroups ||= []).push(group);
+    write(path.join(j.root, 'manifest.json'), j.m);
+    return { added: id, regions: additions.map(t => t.id), grouped: !!group, context: context || null };
+  } catch (e) { for (const p of created) if (fs.existsSync(p)) fs.unlinkSync(p); throw e; }
 }
 async function ingest(dir, id, input, opt, retained = false) {
   check(opt, retained ? ['reason'] : ['prompt-file']); const j = job(dir), t = region(j, id);
+  geometry(j.m, t);
+  assert(t.region.width <= 1024 && t.region.height <= 1024, 'Legacy region exceeds 1K; create a new job from the source');
+  const inputMeta = await sharp(file(j, t.input)).metadata();
+  assert(inputMeta.width === t.region.width && inputMeta.height === t.region.height && hash(file(j, t.input)) === t.inputSha256, 'Editing crop differs from its planned dimensions or content');
   assert(!record(j, id), 'Already imported; use a new job for another reconstruction');
   assert(retained ? opt.reason?.trim() : opt['prompt-file'], retained ? 'A fallback reason is required' : 'Provide --prompt-file');
   const prompt = retained ? null : fs.readFileSync(opt['prompt-file'], 'utf8'); assert(retained || prompt.trim(), 'Prompt is empty');
@@ -118,7 +163,13 @@ let cvPromise;
 async function align(dir, id, opt = {}) {
   check(opt, ['registration-width']); const j = job(dir), t = region(j, id), r = record(j, id);
   assert(r?.state === 'imported', 'Import a result first; already aligned regions use their existing result');
-  geometry(j.m, t); assert(hash(file(j, t.input)) === t.inputSha256 && hash(file(j, j.m.base)) === j.m.baseSha256, 'Reference changed after planning');
+  geometry(j.m, t); assert(hash(file(j, t.input)) === t.inputSha256 && baseHash(j) === j.m.baseSha256, 'Reference changed after planning');
+  if (r.method === 'retained') {
+    r.aligned = `aligned/${id}.png`;
+    await sharp(file(j, t.input)).ensureAlpha().png().toFile(file(j, r.aligned));
+    r.stats = { affine: [1, 0, 0, 0, 1, 0], flowClippedFraction: 0, outsideFootprintFraction: 0, warnings: [] };
+    return finishAlign(j, t, r);
+  }
   const cv = await (cvPromise ||= require('@techstark/opencv-js'));
   const W = t.region.width, H = t.region.height, RW = Math.min(int(opt['registration-width'], 640), W), RH = Math.max(8, Math.round(H * RW / W));
   const mats = [], keep = m => (mats.push(m), m), warnings = [];
@@ -172,14 +223,19 @@ async function align(dir, id, opt = {}) {
     r.aligned = `aligned/${id}.png`; await sharp(pixels, { raw: { width: W, height: H, channels: 4 } }).png().toFile(file(j, r.aligned));
     const finalGray = await sharp(file(j, r.aligned)).flatten({ background: '#808080' }).resize(RW, RH).greyscale().blur(1.25).raw().toBuffer();
     r.stats = { ecc, affine: M, nccBefore: before, nccAfterAffine: afterAffine, nccAfterRemap: ncc(ga, finalGray), flowClippedFraction: clipped / (RW * RH), outsideFootprintFraction: holes / (W * H), warnings };
-    r.signature = signature(j, t, r); r.alignedSha256 = hash(file(j, r.aligned)); r.state = 'aligned';
-    const qw = Math.min(600, W), qh = Math.round(H * qw / W);
-    const left = await sharp(file(j, t.input)).resize(qw, qh).png().toBuffer(), right = await sharp(file(j, r.aligned)).flatten({ background: '#808080' }).resize(qw, qh).png().toBuffer();
-    await sharp({ create: { width: qw * 2, height: qh, channels: 3, background: '#808080' } }).composite([{ input: left, left: 0, top: 0 }, { input: right, left: qw, top: 0 }]).jpeg({ quality: 92 }).toFile(file(j, `qa/${id}.jpg`));
-    write(recPath(j, id), r); return r;
+    return finishAlign(j, t, r);
   } finally { for (const m of mats.reverse()) m.delete(); }
 }
+async function finishAlign(j, t, r) {
+  r.signature = signature(j, t, r); r.alignedSha256 = hash(file(j, r.aligned)); r.state = 'aligned';
+  const qw = Math.min(600, t.region.width), qh = Math.max(1, Math.round(t.region.height * qw / t.region.width));
+  const left = await sharp(file(j, t.input)).resize(qw, qh).png().toBuffer();
+  const right = await sharp(file(j, r.aligned)).flatten({ background: '#808080' }).resize(qw, qh).png().toBuffer();
+  await sharp({ create: { width: qw * 2, height: qh, channels: 3, background: '#808080' } }).composite([{ input: left, left: 0, top: 0 }, { input: right, left: qw, top: 0 }]).jpeg({ quality: 92 }).toFile(file(j, `qa/${t.id}.jpg`));
+  write(recPath(j, t.id), r); return r;
+}
 function current(j, t, r) {
+  geometry(j.m, t);
   assert(r && ['aligned', 'accepted'].includes(r.state), `${t.id}: not aligned`);
   assert(r.signature === signature(j, t, r) && r.alignedSha256 === hash(file(j, r.aligned)), `${t.id}: stale inputs, mask, prompt, or aligned result`);
 }
@@ -246,63 +302,14 @@ async function svgImages(png, r, id, limit = 5750000) {
   return await svgImages(first, { left: r.left, top: r.top, width: a.width, height: a.height }, id + 'a', limit) + await svgImages(second, { left: r.left + b.left, top: r.top + b.top, width: b.width, height: b.height }, id + 'b', limit);
 }
 async function assemble(dir, destination) {
-  const j = job(dir), { width: W, height: H } = j.m, out = path.resolve(destination);
-  assert(!fs.existsSync(out), 'Output directory already exists; choose a new version');
-  const expected = new Set(); for (let row = 0; row < j.m.rows; row++) for (let col = 0; col < j.m.cols; col++) expected.add(`r${row + 1}c${col + 1}`);
-  for (const t of j.m.regions.filter(t => t.kind === 'tile')) assert(expected.delete(t.id), `Duplicate or unexpected tile ${t.id}`);
-  assert(!expected.size, 'Manifest is missing planned grid tiles');
-  for (const t of j.m.regions) { geometry(j.m, t); const r = record(j, t.id); current(j, t, r); assert(r.state === 'accepted', `${t.id}: visual QA not accepted`); }
-  assert(hash(file(j, j.m.base)) === j.m.baseSha256, 'Reference base changed'); fs.mkdirSync(out, { recursive: true });
-  const canvas = await sharp(file(j, j.m.base)).ensureAlpha().raw().toBuffer(), svg = path.join(out, 'refined.svg');
-  fs.writeFileSync(svg, `<svg xmlns="http://www.w3.org/2000/svg" xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}"><title>Tiled image refinement</title><desc>Generated raster reconstruction in independently editable embedded image layers.</desc>`);
-  const append = async (id, label, png, r) => fs.appendFileSync(svg, `<g id="${xml(id)}" inkscape:groupmode="layer" inkscape:label="${xml(label)}">${await svgImages(png, r, id + '-image')}</g>\n`);
-  await append('base', 'Reference base', fs.readFileSync(file(j, j.m.base)), { left: 0, top: 0, width: W, height: H });
-  const order = [...j.m.regions.filter(t => t.kind === 'tile').sort((a, b) => a.row - b.row || a.col - b.col), ...j.m.regions.filter(t => t.kind === 'detail')], records = [], seamPaths = [];
-  for (const t of order) {
-    const rec = record(j, t.id), r = t.region, pixels = await sharp(file(j, rec.aligned)).ensureAlpha().raw().toBuffer();
-    if (t.kind === 'tile') {
-      const sw = Math.ceil(r.width / 4), sh = Math.ceil(r.height / 4), sx = r.width / sw, sy = r.height / sh;
-      const old = await sharp(canvas, { raw: { width: W, height: H, channels: 4 } }).extract(r).resize(sw, sh).raw().toBuffer();
-      const newer = await sharp(pixels, { raw: { width: r.width, height: r.height, channels: 4 } }).resize(sw, sh).raw().toBuffer();
-      const prevX = t.col ? order.find(q => q.kind === 'tile' && q.row === t.row && q.col === t.col - 1) : null;
-      const prevY = t.row ? order.find(q => q.kind === 'tile' && q.row === t.row - 1 && q.col === t.col) : null;
-      const ox = prevX ? prevX.region.left + prevX.region.width - r.left : 0, oy = prevY ? prevY.region.top + prevY.region.height - r.top : 0;
-      const left = ox ? seamRoute(old, newer, sw, sh, Math.round(ox / sx), true, sx) : null;
-      const top = oy ? seamRoute(old, newer, sw, sh, Math.round(oy / sy), false, sy) : null;
-      const feather = num(t.feather, j.m.feather, 0.01);
-      for (let y = 0; y < r.height; y++) for (let x = 0; x < r.width; x++) {
-        let a = 1;
-        if (left && x < ox) a = Math.min(a, smooth((x - routeAt(left, y, sy)) / Math.min(feather, ox / 2) + 0.5));
-        if (top && y < oy) a = Math.min(a, smooth((y - routeAt(top, x, sx)) / Math.min(feather, oy / 2) + 0.5));
-        pixels[(y * r.width + x) * 4 + 3] = Math.round(pixels[(y * r.width + x) * 4 + 3] * a);
-      }
-      if (left) seamPaths.push(Array.from(left, (v, i) => [r.left + v, r.top + (i + 0.5) * sy]));
-      if (top) seamPaths.push(Array.from(top, (v, i) => [r.left + (i + 0.5) * sx, r.top + v]));
-    } else {
-      const mask = await sharp(file(j, t.mask)).removeAlpha().greyscale().raw().toBuffer();
-      for (let i = 0; i < mask.length; i++) pixels[i * 4 + 3] = Math.round(pixels[i * 4 + 3] * mask[i] / 255);
-    }
-    const png = await sharp(pixels, { raw: { width: r.width, height: r.height, channels: 4 } }).png().toBuffer();
-    for (let y = 0; y < r.height; y++) for (let x = 0; x < r.width; x++) {
-      const i = (y * r.width + x) * 4, k = ((r.top + y) * W + r.left + x) * 4, a = pixels[i + 3] / 255;
-      for (let c = 0; c < 3; c++) canvas[k + c] = Math.round(pixels[i + c] * a + canvas[k + c] * (1 - a));
-    }
-    await append(t.id, `${t.id} (${rec.method})`, png, r);
-    records.push({ ...rec, region: r, destinationScale: [r.width / rec.nativeWidth, r.height / rec.nativeHeight] });
-  }
-  fs.appendFileSync(svg, '</svg>\n');
-  await sharp(canvas, { raw: { width: W, height: H, channels: 4 } }).removeAlpha().withIccProfile('srgb').png().toFile(path.join(out, 'refined.png'));
-  const pw = Math.min(1920, W), ph = Math.round(H * pw / W);
-  await sharp(canvas, { raw: { width: W, height: H, channels: 4 } }).resize(pw, ph).jpeg({ quality: 94 }).toFile(path.join(out, 'preview.jpg'));
-  const overlay = `<svg xmlns="http://www.w3.org/2000/svg" width="${pw}" height="${ph}" viewBox="0 0 ${W} ${H}"><g fill="none" stroke="#00ffb7" stroke-width="${2 * W / pw}">${seamPaths.map(p => `<polyline points="${p.map(v => v.join(',')).join(' ')}"/>`).join('')}</g></svg>`;
-  await sharp(path.join(out, 'preview.jpg')).composite([{ input: Buffer.from(overlay) }]).jpeg().toFile(path.join(out, 'seams.jpg'));
-  const report = { schemaVersion: 1, sourceName: j.m.sourceName, sourceSha256: j.m.sourceSha256, width: W, height: H,
-    generatedRegions: records.filter(r => r.method === 'generated').length, retainedRegions: records.filter(r => r.method === 'retained').length,
-    disclosure: 'Interpretive detail. Output canvas size differs from native generation resolution. SVG embeds raster layers.',
-    svgSha256: hash(svg), pngSha256: hash(path.join(out, 'refined.png')), records };
-  write(path.join(out, 'report.json'), report); return { output: out, dimensions: [W, H], generated: report.generatedRegions, retained: report.retainedRegions };
+  return require('./render.cjs').assemble(job(dir), destination, { file, record, current, geometry, hash, write, seamRoute, routeAt, smooth, num, xml, assert });
 }
 async function verify(destination, opt = {}) {
+  const report = read(path.join(path.resolve(destination), 'report.json'));
+  assert([1, 2].includes(report.schemaVersion), 'Unsupported export report version');
+  return report.schemaVersion === 1 ? verifyLegacy(destination, opt) : require('./render.cjs').verify(destination, opt);
+}
+async function verifyLegacy(destination, opt = {}) {
   check(opt, ['max-mean-difference', 'max-outlier-fraction']); const out = path.resolve(destination), r = read(path.join(out, 'report.json'));
   const svg = path.join(out, 'refined.svg'), png = path.join(out, 'refined.png');
   assert(hash(svg) === r.svgSha256 && hash(png) === r.pngSha256, 'Export hashes changed');
@@ -326,10 +333,11 @@ async function main(args) {
     const k = args[i].slice(2); assert(args[i + 1] !== undefined && !args[i + 1].startsWith('--') && !(k in opt), `Invalid option --${k}`); opt[k] = args[++i];
   }
   const [cmd, a, b, c] = pos;
-  if (!cmd || cmd === 'help') { console.log('prepare SOURCE JOB; add-region JOB ID; ingest JOB ID IMAGE; retain JOB ID; align JOB ID; accept JOB ID; reset JOB ID; status JOB; assemble JOB NEW_OUTPUT; verify OUTPUT. Options: references/cli.md'); return; }
-  const counts = { prepare: 3, 'add-region': 3, ingest: 4, retain: 3, align: 3, accept: 3, reset: 3, status: 2, assemble: 3, verify: 2 };
+  if (!cmd || cmd === 'help') { console.log('plan SOURCE; prepare SOURCE JOB; add-region JOB ID; ingest JOB ID IMAGE; retain JOB ID; align JOB ID; accept JOB ID; reset JOB ID; status JOB; assemble JOB NEW_OUTPUT; verify OUTPUT. Options: references/cli.md'); return; }
+  const counts = { plan: 2, prepare: 3, 'add-region': 3, ingest: 4, retain: 3, align: 3, accept: 3, reset: 3, status: 2, assemble: 3, verify: 2 };
   assert(counts[cmd] === pos.length, 'Unknown command or incorrect positional arguments'); let result;
   switch (cmd) {
+    case 'plan': result = await plan(a, opt); break;
     case 'prepare': result = await prepare(a, b, opt); break;
     case 'add-region': result = await addRegion(a, b, opt); break;
     case 'ingest': result = await ingest(a, b, c, opt); break;
@@ -343,5 +351,5 @@ async function main(args) {
   }
   console.log(JSON.stringify(result, null, 2));
 }
-module.exports = { prepare, addRegion, ingest, align, accept, reset, status, assemble, verify, seamRoute, svgImages, hash };
+module.exports = { plan, prepare, addRegion, ingest, align, accept, reset, status, assemble, verify, seamRoute, svgImages, hash };
 if (require.main === module) main(process.argv.slice(2)).catch(e => { console.error(e.message); process.exitCode = 1; });

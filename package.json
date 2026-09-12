@@ -1,10 +1,19 @@
 {
   "name": "tiled-image-refinement",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "description": "Deterministic helpers for an AI tiled image-refinement skill",
   "license": "MIT",
-  "engines": { "node": ">=22" },
-  "scripts": { "test": "node --test tests/pipeline.test.cjs", "check": "node --check scripts/pipeline.cjs" },
-  "dependencies": { "@techstark/opencv-js": "5.0.0-release.1", "sharp": "0.35.4" }
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "test": "node --test tests/*.test.cjs",
+    "check": "node scripts/check.cjs",
+    "test:stress": "node scripts/stress.cjs"
+  },
+  "dependencies": {
+    "@techstark/opencv-js": "5.0.0-release.1",
+    "sharp": "0.35.4"
+  }
 }

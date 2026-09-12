@@ -2,23 +2,30 @@
 
 ## Canvas and tile planning
 
-The coordinate base is an oriented, sRGB image resized to the target canvas. It provides a stable reference and fills narrow uncovered edges. It is not evidence of reconstructed detail.
+The coordinate base is an oriented, sRGB TIFF resized to the target canvas. It provides a stable reference and fills narrow uncovered edges. It is not evidence of reconstructed detail. The normalization path writes directly to a file rather than first constructing a full-size PNG buffer.
 
-Treat 7680 pixels on the long edge as a default convention, not a universal definition of 8K. A 2:3 portrait becomes 5120×7680. A 4.31:1 banner at 7680 pixels wide is only about 1782 pixels high; a request for a 4320-pixel short edge instead requires approximately 18620 pixels of width. Calculate from the actual oriented source dimensions and round once. Preserve a source that is already larger unless the user asks to reduce it.
+Presets use these long edges: **2K/QHD = 2560, 4K = 3840, 8K = 7680, 16K = 15360**. The default is 8K. The 2K name follows the QHD display convention used by [BenQ](https://www.benq.com/en-us/knowledge-center/knowledge/why-choose-a-27-monitor-for-qhd-1440p-gaming.html); 4K/8K display dimensions are described by [ITU](https://www.itu.int/hub/2020/04/new-itu-reports-help-shape-next-tv-revolution-high-dynamic-range-hdr/), and [VESA](https://vesa.org/press/vesa-publishes-displayport-2-0-video-standard-enabling-support-for-beyond-8k-resolutions-higher-refresh-rates-for-4k-hdr-and-virtual-reality-applications/) describes a 15360×8640 16K configuration. Applying those long edges to arbitrary image aspect ratios is this project's convention, not a universal definition of K. Report exact pixels alongside the preset.
 
-Start from a grid appropriate to the scene, then adapt to the editor's actual returned size:
+A 2:3 portrait at 8K becomes 5120×7680. A 4.31:1 banner at 7680 pixels wide is only about 1782 pixels high; a request for a 4320-pixel short edge instead requires approximately 18620 pixels of width. Calculate from oriented source dimensions and round once. Preserve a source that is already larger. One job chooses one preset or one custom edge requirement; the CLI does not generate several resolutions automatically or use successive generative passes through each preset.
 
-| Shape | Example grid | Typical initial overlap |
-|---|---|---|
-| Landscape | 4 columns × 3 rows | 448 pixels |
-| Portrait | 3 columns × 4 rows | 448 pixels |
-| Wide banner | 6 columns × 2 rows | 256 pixels |
+Run the read-only `plan` command first. It shares its planner with `prepare`, including exact coordinates, maximum crop dimensions and resource checks. The maximum actual edit width and height are each **1024 pixels, including overlap**. `--max-tile-edge` can lower this cap. By default, adjacent tiles overlap by 128 pixels: `pad` extends each core by 64 pixels per side and clips at canvas edges.
 
-`pad` extends each core on all sides. Adjacent tiles overlap by twice `pad`, clipped at canvas edges. These are working examples, not model limits. The helper requires pad to be smaller than half the smallest core edge to keep neighbors and seam strips well-defined.
+For cap `L` and per-side padding `p`, the core limit is `L - 2p`. For each canvas dimension `D`, use one tile if `D <= L`; otherwise use `ceil(D / (L - 2p))` cores. Partition each axis into contiguous integer cores, expand them by `p`, then check every actual crop. The neighbor/seam constraints require padding below half the smallest split-axis core; invalid options fail before a job is created. An unsplit axis needs no overlap with a neighbor. Manual grid overrides must meet the same cap and geometry checks; they are not a way to bypass the limit.
 
-For a tile destined for `(Tw, Th)` with actual generated size `(Gw, Gh)`, report the final placement factors `Tw/Gw` and `Th/Gh`. A request for 2000 pixels may return fewer pixels. For example, a 1932×2144 destination filled by 1191×1321 generated pixels is still enlarged about 1.62×. Requesting a larger size in prose does not establish a native output resolution.
+With the default 1024 cap and 128 overlap:
 
-If the observed factor is much above your chosen quality target (1.5× is a useful review point, not a strict limit), use more/smaller cores or describe the limitation. Overlap also consumes the editor's pixel budget. Do one representative pilot before dispatching all edits. Favor semantic crops around eyes, hands, lettering, and repeated geometry over indiscriminately increasing tile count.
+| Preset | 16:9 destination | Grid | Base edit count |
+|---|---|---|---|
+| 2K/QHD | 2560×1440 | 3×2 | 6 |
+| 4K | 3840×2160 | 5×3 | 15 |
+| 8K | 7680×4320 | 9×5 | 45 |
+| 16K | 15360×8640 | 18×10 | 180 |
+
+These counts exclude independent detail edits and retries. Narrow images, portraits and squares derive their own grids from their actual dimensions. A larger preserved source can require more blocks than the requested preset's example.
+
+For a tile destined for `(Tw, Th)` with actual generated size `(Gw, Gh)`, report placement factors `Tw/Gw` and `Th/Gh`. A 982×992 destination filled by 768×768 generated pixels still needs interpolation and may involve aspect-ratio differences requiring review. The helper guarantees the input/destination cap, not the editor's native output resolution. Save and report actual return dimensions rather than the size requested in a prompt.
+
+Do one representative pilot before dispatching all edits. If the returned size is too small for the desired placement density, create a new plan with a lower cap. Overlap consumes the editor's pixel budget, while too little context can impair object recognition. Choose context-rich semantic crops around eyes, hands, lettering and repeated geometry while keeping each actual editing target within the cap.
 
 The helper currently targets **opaque still images**. Transparency preservation, HDR, animation, and scientific pixel values need a different normalization/compositing path.
 
@@ -50,7 +57,13 @@ Tiles assemble in row-major order. In each actual overlap, the helper computes a
 
 The default feather is 48 destination pixels, clamped to the available overlap. Make it narrower where thin lines otherwise double, or broader for gradual texture transitions. Wider feathering cannot repair incorrect geometry. Review the exact join on grids, repeated tiles, hair, ribbons, straight edges, and structured fabric. `seams.jpg` displays the selected routes.
 
-For a portrait or important object, plan a context-rich crop and an independent **grayscale mask** at that crop's destination size. White means use the refined region, black means keep the assembled canvas. Use a soft shaped contour; an arbitrary rectangle can introduce a visible border. Register detail regions against the same base as the tiles. The helper applies them after grid assembly in manifest order. Inspect expression, gaze, teeth, finger count, boundaries, and continuity with the neck or surrounding objects.
+For a portrait or important object, plan a context-rich region and an independent **grayscale mask** at that region's destination size. White means use the refined region, black means keep the assembled canvas. Use a soft shaped contour; an arbitrary rectangle can introduce a visible border. Register detail edits against the same base as the tiles. The helper applies independent detail layers after grid assembly in manifest order. Inspect expression, gaze, teeth, finger count, boundaries, and continuity with the neck or surrounding objects.
+
+If the region exceeds the edit cap, `add-region` creates a logical parent group and capped child edits such as `face-r1c1`. The original region-sized mask belongs to the parent. Assemble the children within the group's canvas first, then apply that parent mask once. Applying it independently to overlapping children would strengthen the mask incorrectly in the overlap. All children must complete the normal import, alignment and visual review gates. Do not import an entire oversized generated parent instead.
+
+The final SVG exposes that completed region as one logical editable layer, internally stored in capped raster pieces. Child edit IDs, group membership and native generation sizes remain in the report records; they are not separate adjustable SVG overlays after group stitching.
+
+An optional `--context` image is normalized to a reference no larger than 1024 pixels on either edge and stored under `references/`. It can show the whole object or original composition when the editor supports separate references. This image is marked as context, not as the edit target: continue to edit only the supplied capped child crop. Avoid relying on a generated overview as the only structural reference.
 
 ## Optional authorized removal edits
 
@@ -69,6 +82,8 @@ The current CLI does not automate removal-mask registration/exclusion. Do not us
 
 `manifest.json` describes the complete queue, and `records/<id>.json` describes one region's state. Each worker owns disjoint IDs. Planning operations happen before import; assembly and final delivery have one owner. Per-region records are written through a temporary file and rename. This is not a distributed lock service: two workers must never process the same ID.
 
+New manifests retain the requested preset, actual dimensions, layout version, cap, overlap and parent/child relationships. The job limit is 1000 actual edit blocks including detail children; adding a region checks this total. Changing the source, target size or grid requires a new job. Existing legacy jobs are read without rewriting coordinates or silently migrating their layout. Existing artifacts remain processable, but a new import for a legacy region larger than 1024×1024 is rejected; start a newly planned job from the original source.
+
 Use `status` to find unfinished work. Use `reset` for a failed visual result and `retain` for a declared source-based fallback. The assembly gate requires complete grid membership, every region's visual acceptance, and unchanged inputs/results/masks. It checks file hashes again; the existence of an old aligned PNG alone is insufficient.
 
 For partial progress, show the contact sheet or individual QA crops. The helper intentionally has no "ignore missing tiles" final-export option. If a requested batch is incomplete, say which images or regions remain instead of counting a preview as a deliverable.
@@ -78,10 +93,14 @@ For partial progress, show the contact sheet or individual QA crops. The helper 
 Use two separate acceptance tracks:
 
 - **Visual:** overall composition, meaningful local improvements, identity and anatomy, seam crossings, no invented text, intentional style/blur, edit-mask edges.
-- **Mechanical:** dimensions, complete records, generated/retained counts, native generation size, standalone SVG data, full-size SVG rasterization versus PNG, and copied-file hashes.
+- **Mechanical:** requested versus actual dimensions, edit cap, complete records, generated/retained counts, native generation sizes and placement factors, standalone SVG data, full-pixel SVG/PNG comparison, and copied-file hashes.
 
-The SVG embeds PNGs in individual Inkscape-compatible layer groups. Large embedded PNGs are losslessly subdivided to avoid very large data attributes. This retains editability at the layer level, not at individual hair-strand or path level. Files may be hundreds of megabytes; publish smaller examples to documentation rather than committing production renders by default.
+The SVG embeds PNGs in individual Inkscape-compatible layer groups. The coordinate base is embedded in tiles no larger than 1024×1024; larger PNG payloads are further subdivided losslessly if required. SVG writing is incremental, with node positions and byte locations recorded for bounded verification. This retains editability at the layer level, not at individual hair-strand or path level. Files may be hundreds of megabytes; publish smaller examples to documentation rather than committing production renders by default.
 
-The helper runs one processing job per process and limits libvips worker concurrency. Full-canvas buffers, OpenCV WASM, and SVG rasterization can still consume several gigabytes. Start one full-size assembly/render at a time, measure memory, and increase independent-image concurrency only when resources support it. Avoid launching all large render jobs at once simply because generation was parallel.
+Assembly uses a disk-backed RGBA canvas, reading and writing one region at a time. A fixed-layout uncompressed TIFF wraps its pixels for file-to-file PNG encoding. This avoids treating a raw pixel stream as if it guaranteed bounded-memory image encoding. Processed buffers are released between regions, and file hashes are read in chunks.
+
+`verify` reads the actual saved SVG nodes and renders bounded windows at one destination pixel per rendered pixel. Every PNG pixel is compared; this is not a downscaled preview test. It preserves the mean-difference and outlier thresholds used by the full-render checker. Synthetic small-image tests compare the windowed method with a complete SVG render. File agreement is separate from artistic quality.
+
+The supported canvas limit is 256 megapixels, enough for a 15360×15360 16K square (235.9 MP), a 4:3 16K image (176.9 MP), and a 16:9 16K image (132.7 MP). The planner reports temporary disk requirements before creating files. Keep large assembly and verification serial; generation concurrency does not imply that large render jobs should run together. The release stress suite exercises landscape, 4:3, square and portrait 16K exports and checks a 4 GiB single-process peak-memory ceiling. This is a test criterion, not a promise that every runtime or image editor has the same memory use.
 
 If copying deliverables to another directory, compare SHA-256 values after copying. Include the report and verification result alongside the user's requested formats. Explain that generated detail is an interpretation and that interpolation is still part of placement.
