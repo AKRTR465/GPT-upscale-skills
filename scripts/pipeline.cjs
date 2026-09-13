@@ -58,6 +58,7 @@ function signature(j, t, r) {
   return crypto.createHash('sha256').update(JSON.stringify({ region: t, input: hash(file(j, t.input)),
     generated: hash(file(j, r.generated)), mask: t.mask ? hash(file(j, t.mask)) : null,
     base: baseHash(j), method: r.method, prompt: r.prompt, reason: r.reason,
+    ...(j.m.watermarkRemoval ? { watermarkRemoval: j.m.watermarkRemoval } : {}),
     ...(group ? { group, groupMask: sharedHash(j, group.mask) } : {}),
     ...(t.context ? { contextHash: sharedHash(j, t.context) } : {}) })).digest('hex');
 }
@@ -89,7 +90,7 @@ async function prepare(source, dir, opt = {}) {
     const pw = Math.max(1, Math.round(m.width / z)), ph = Math.max(1, Math.round(m.height / z));
     const overlay = `<svg xmlns="http://www.w3.org/2000/svg" width="${pw}" height="${ph}" viewBox="0 0 ${m.width} ${m.height}">${m.regions.map(t => `<rect x="${t.core.left}" y="${t.core.top}" width="${t.core.width}" height="${t.core.height}" fill="none" stroke="#00ffb7" stroke-width="${3 * z}"/><text x="${t.core.left + 12 * z}" y="${t.core.top + 28 * z}" font-size="${22 * z}" fill="#00ffb7">${t.id}</text>`).join('')}</svg>`;
     await sharp(file(j, m.base), imageOptions(m.width, m.height)).resize(pw, ph).composite([{ input: Buffer.from(overlay) }]).jpeg().toFile(file(j, 'qa/plan.jpg'));
-    return { job: root, dimensions: [m.width, m.height], tiles: m.regions.length, overlap: m.overlap, maxCrop: m.maxCrop, resources: m.resources };
+    return { job: root, dimensions: [m.width, m.height], watermarkRemoval: m.watermarkRemoval, tiles: m.regions.length, overlap: m.overlap, maxCrop: m.maxCrop, resources: m.resources };
   } catch (e) {
     // Only remove the new isolated directory created by this invocation.
     fs.rmSync(root, { recursive: true, force: true }); throw e;
@@ -251,7 +252,7 @@ function accept(dir, id, opt) {
   r.state = 'accepted'; r.qaNote = opt.note; write(recPath(j, id), r); return { id, state: r.state };
 }
 function status(dir) {
-  const j = job(dir); return { dimensions: [j.m.width, j.m.height], regions: j.m.regions.map(t => {
+  const j = job(dir); return { dimensions: [j.m.width, j.m.height], watermarkRemoval: j.m.watermarkRemoval || { enabled: false, status: 'disabled' }, regions: j.m.regions.map(t => {
     const r = record(j, t.id); let stale = false;
     if (r && ['aligned', 'accepted'].includes(r.state)) { try { current(j, t, r); } catch { stale = true; } }
     return { id: t.id, kind: t.kind, state: stale ? 'stale' : r?.state || 'pending', method: r?.method || null, native: r ? [r.nativeWidth, r.nativeHeight] : null };

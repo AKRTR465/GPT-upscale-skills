@@ -24,6 +24,8 @@ See [example provenance](examples/README.md) for comparison stages, dimensions, 
 
 ## What it does
 
+**Optional watermark cleanup defaults to off.** An explicit removal request enables local background reconstruction, masked compositing and outside-mask pixel checks before upscaling the lossless clean source. This avoids reintroducing marks from the reference base or overlaps. The CLI accepts `--watermark-removal off|on`; enabled jobs also require `--removal-record`. See [the cleanup workflow](references/watermark-removal.md). Helpers validate and record this host-operated stage; they do not call an image model.
+
 1. Inspect the oriented source and choose a preset or custom target that preserves aspect ratio.
 2. Read the JSON plan, then prepare overlapping crops capped at 1024×1024 including context padding.
 3. Edit each crop using shared invariants and crop-specific observations.

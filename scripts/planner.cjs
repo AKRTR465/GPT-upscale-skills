@@ -1,6 +1,7 @@
 'use strict';
 // Shared, read-only geometry planning. No image generation or filesystem writes.
 const sharp = require('sharp');
+const { OPTIONS: REMOVAL_OPTIONS, removalProvenance } = require('./removal.cjs');
 const { MAX_TILES, validateCanvas, imageOptions, inspectImage, resourceEstimate, checkDisk } = require('./resources.cjs');
 const PRESETS = Object.freeze({ '2k': 2560, '4k': 3840, '8k': 7680, '16k': 15360 });
 const LAYOUT_OPTIONS = ['max-tile-edge', 'overlap', 'pad', 'cols', 'rows', 'feather'];
@@ -59,7 +60,8 @@ function planGrid(width, height, opt = {}) {
   };
 }
 async function plan(source, opt = {}, destination = null) {
-  checkOptions(opt, [...LAYOUT_OPTIONS, ...SIZE_OPTIONS, 'work-dir']);
+  checkOptions(opt, [...LAYOUT_OPTIONS, ...SIZE_OPTIONS, ...REMOVAL_OPTIONS, 'work-dir']);
+  const watermarkRemoval = await removalProvenance(source, opt);
   const selectors = SIZE_OPTIONS.filter(key => own(opt, key));
   assert(selectors.length <= 1, 'Choose only one of --preset, --long-edge OR --short-edge');
   const preset = selectors.length === 0 ? '8k' : own(opt, 'preset') ? opt.preset : null;
@@ -83,7 +85,7 @@ async function plan(source, opt = {}, destination = null) {
   if (own(opt, 'work-dir')) assert(typeof opt['work-dir'] === 'string' && opt['work-dir'].trim(), 'Invalid --work-dir');
   if (diskDestination) grid.resources.diskCheck = checkDisk(diskDestination, grid.resources.estimatedAdditionalPrepareBytes);
   return {
-    ...grid, sourceWidth, sourceHeight, preset, requestedLongEdge, requestedShortEdge,
+    ...grid, sourceWidth, sourceHeight, preset, requestedLongEdge, requestedShortEdge, watermarkRemoval,
     scale, preservedLargerSource: requestedShortEdge !== null ? Math.min(sourceWidth, sourceHeight) > requestedShortEdge : Math.max(sourceWidth, sourceHeight) > requestedLongEdge
   };
 }

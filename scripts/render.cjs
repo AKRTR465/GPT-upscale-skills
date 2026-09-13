@@ -98,6 +98,7 @@ async function assemble(j,destination,h){
     const overlay=`<svg xmlns="http://www.w3.org/2000/svg" width="${pw}" height="${ph}" viewBox="0 0 ${W} ${H}"><g fill="none" stroke="#00ffb7" stroke-width="${2*W/pw}">${seamPaths.map(p=>`<polyline points="${p.map(v=>v.join(',')).join(' ')}"/>`).join('')}</g></svg>`;
     await sharp(path.join(out,'preview.jpg')).composite([{input:Buffer.from(overlay)}]).jpeg().toFile(path.join(out,'seams.jpg'));
     const report={schemaVersion:2,sourceName:j.m.sourceName,sourceSha256:j.m.sourceSha256,width:W,height:H,preset:j.m.preset||null,
+      watermarkRemoval:j.m.watermarkRemoval||{enabled:false,status:'disabled'},
       generatedRegions:records.filter(r=>r.method==='generated').length,retainedRegions:records.filter(r=>r.method==='retained').length,
       disclosure:'Interpretive detail. Output canvas size differs from native generation resolution. SVG embeds raster layers.',
       svgSha256:hash(path.join(out,'refined.svg')),pngSha256:hash(path.join(out,'refined.png')),svgIndex:svg.index,records,

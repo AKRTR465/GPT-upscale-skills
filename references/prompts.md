@@ -19,6 +19,8 @@ outer border band's geometry and color closely so neighboring crops can join.
 Do not zoom, reframe, rotate, move features, add objects, invent lettering,
 change clothing coverage or anatomy, or replace the original art style.
 Avoid halos, plastic smoothing and uniformly sharpened background blur.
+Preserve existing lettering, signatures and logos in this refinement crop;
+watermark cleanup, if enabled, has already been performed in the source.
 
 Visible local content: [precise observations specific to this crop].
 Useful improvements: [existing strands, iris contours, fabric seams,
@@ -48,7 +50,7 @@ inside [specified region/mask]. Reconstruct that area using the surrounding
 unchanged. Preserve crop framing and unchanged edge geometry.
 ```
 
-Use a real mask when supported, and a local compositing mask afterward. Prompt wording alone is not proof of pixel-local editing. For removal, use the separate cleanup stage described in [the operating guide](workflow.md).
+Use this pattern only when watermark removal is explicitly enabled. Use a real mask when supported, and a local compositing mask afterward. Prompt wording alone is not proof of pixel-local editing. Follow the separate [watermark workflow and switch](watermark-removal.md); keep remaining lettering in ordinary refinement crops.
 
 ## Examples of useful specificity
 

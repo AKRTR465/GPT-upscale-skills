@@ -29,8 +29,12 @@ node scripts/pipeline.cjs prepare "input.png" "jobs/example" --preset 8k --max-t
 | `--cols N`, `--rows N` | Optional manual grid dimensions; the resulting grid must still satisfy cap and seam constraints |
 | `--feather N` | Initial seam transition in destination pixels; default 48 |
 | `--work-dir PATH` | Read-only `plan` only: inspect free space on the destination filesystem without creating it. `prepare` uses its positional JOB directory. |
+| `--watermark-removal off\|on` | Default `off`. `on` imports the reviewed cleanup assessment; it does not run an image editor. |
+| `--removal-record FILE` | Required with `on`, rejected with `off`; links the exact source/result hashes and cleanup QA. |
 
 All options take a value. Multi-tile layouts need overlap of at least 4 pixels, and padding must be below half the smallest core edge on each split axis. Dimensions preserve the original aspect ratio and do not shrink an already larger source. The report shows the actual result, which can exceed the requested preset. One job produces one target resolution; there is no automatic multi-preset generation or export.
+
+For optional cleanup, follow [the watermark workflow](watermark-removal.md) before `prepare`. Both commands receive the same `--watermark-removal on --removal-record cleanup/removal.json` flags and the cleaned lossless source (or unchanged original for `not-found`). The manifest, `status` and export report retain the mode and assessment. Start a new job to change modes after preparation.
 
 For cap `L` and per-side padding `p`, each split axis uses `ceil(D / (L - 2p))` cores; an axis already no larger than `L` uses one core. Actual cropped integer rectangles are checked after expanding by `p` and clipping at the canvas edges. Invalid overlap, undersized manual grids, dimensions or temporary files exceeding format boundaries, insufficient destination disk space, or more than 1000 actual edit blocks fail before creating the job. Invalid manual grids include a suggested automatic layout; they are not silently changed.
 

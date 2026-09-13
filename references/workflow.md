@@ -67,16 +67,9 @@ An optional `--context` image is normalized to a reference no larger than 1024 p
 
 ## Optional authorized removal edits
 
-Removal is not part of default enlargement. When it is requested, identify the exact overlay and distinguish it from signs, decorative symbols, labels, or text that belong to the scene.
+Watermark cleanup is off by default. When explicitly enabled, use the separate [watermark workflow](watermark-removal.md) before `prepare`: exact overlay inspection, capped context crops, background reconstruction, mask-excluded alignment/color statistics, masked compositing, and zero decoded-pixel changes outside the mask. The cleaned source must also supply the SVG base and all refinement crops.
 
-For this helper, make a separately reviewed clean source **before** `prepare`:
-
-1. Crop the requested edit with surrounding context and use the host image editor to reconstruct the background.
-2. Align using unchanged surrounding pixels. Exclude the removal mask from registration and color estimation; do not force erased lettering to match the original.
-3. Composite only through the explicit removal mask. Compare original and cleaned decoded pixels outside the mask to verify locality, and save the clean source losslessly without overwriting the original.
-4. Use that clean source for the refinement job. This prevents hidden original signatures or lettering from returning through the SVG's reference layer, overlap blend, or color correction.
-
-The current CLI does not automate removal-mask registration/exclusion. Do not use its ordinary `align` command as an inpainting-mask aligner. Use host-supported editing/compositing or a suitably adapted script, then enter the standard pipeline. Keep the edit prompt and comparison in the delivery records. Do not describe a retained region or rejected edit as successfully redrawn.
+The CLI records this stage with `--watermark-removal on --removal-record FILE`; it does not automate mask-aware alignment or image generation. Its ordinary `align` command must not be used as an inpainting-mask aligner. See the linked guide for switch behavior, failure handling and the record schema.
 
 ## Job ownership and resumability
 
