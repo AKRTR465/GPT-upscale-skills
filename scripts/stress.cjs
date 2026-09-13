@@ -69,7 +69,8 @@ async function fixtureRecords(sharp, p, job, manifest) {
     };
     r.signature = crypto.createHash('sha256').update(JSON.stringify({
       region: t, input: p.hash(path.join(job, t.input)), generated: p.hash(path.join(job, generated)),
-      mask: null, base, method: r.method, prompt: r.prompt, reason: r.reason
+      mask: null, base, method: r.method, prompt: r.prompt, reason: r.reason,
+      ...(manifest.watermarkRemoval ? { watermarkRemoval: manifest.watermarkRemoval } : {})
     })).digest('hex');
     save(path.join(job, 'records', `${t.id}.json`), r);
   }

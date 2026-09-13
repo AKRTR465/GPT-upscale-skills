@@ -4,6 +4,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const { execFileSync } = require('node:child_process');
 const sharp = require('sharp');
 const p = require('../scripts/pipeline.cjs');
 function temp(t) {
@@ -69,4 +70,14 @@ test('enabled cleanup supplies the base and exported SVG; off preserves the supp
   const mp = path.join(on, 'manifest.json'), m = JSON.parse(fs.readFileSync(mp));
   m.watermarkRemoval = { enabled: false, status: 'disabled' }; fs.writeFileSync(mp, JSON.stringify(m));
   assert.equal(p.status(on).regions[0].state, 'stale', 'changing metadata cannot reuse accepted cleanup work');
+});
+
+test('stress fixture records remain compatible with default-off manifests', t => {
+  const root = temp(t), report = path.join(root, 'stress-report.json');
+  execFileSync(process.execPath, [path.join(__dirname, '../scripts/stress.cjs'),
+    '--shape', 'landscape', '--long-edge', '1024', '--work-dir', path.join(root, 'stress'), '--report', report],
+  { windowsHide: true, timeout: 60000 });
+  const result = JSON.parse(fs.readFileSync(report));
+  assert.equal(result.passed, true);
+  assert.equal(result.shapes[0].verification.pixelsCompared, 1024 * 576);
 });
